@@ -24,7 +24,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private let reader = BatteryPowerReader()
     private let formatter = PowerFormatter()
     private let menu = NSMenu()
-    private let detailItems = (0 ..< 6).map { _ in NSMenuItem(title: "", action: nil, keyEquivalent: "") }
+    private let detailItems = (0 ..< 8).map { _ in NSMenuItem(title: "", action: nil, keyEquivalent: "") }
     private let updatedItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var timer: Timer?
     private var snapshot = BatterySnapshot.unavailable()

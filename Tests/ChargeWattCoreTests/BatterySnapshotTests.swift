@@ -16,6 +16,11 @@ struct BatterySnapshotTests {
             "CurrentCapacity": 51,
             "MaxCapacity": 100,
             "CycleCount": 39,
+            "TimeRemaining": 37,
+            "AvgTimeToFull": 37,
+            "AvgTimeToEmpty": 65_535,
+            "AppleRawMaxCapacity": 4_626,
+            "DesignCapacity": 4_629,
             "AdapterDetails": [
                 "Watts": 45,
                 "AdapterVoltage": 20_000,
@@ -28,6 +33,9 @@ struct BatterySnapshotTests {
         #expect(snapshot.adapterWatts == 45)
         #expect(abs(snapshot.adapterVoltageVolts! - 20.0) < 0.001)
         #expect(abs(snapshot.adapterCurrentAmps! - 2.25) < 0.001)
+        #expect(snapshot.timeToFullMinutes == 37)
+        #expect(snapshot.timeToEmptyMinutes == nil)
+        #expect(abs(snapshot.batteryHealthPercent! - 99.9) < 0.05)
     }
 
     @Test func fallsBackToAmperageWhenInstantAmperageIsMissing() {
@@ -51,6 +59,45 @@ struct BatterySnapshotTests {
         #expect(abs(snapshot.temperatureCelsius! - 29.25) < 0.05)
     }
 
+    @Test func usesTimeRemainingAsFallbackForChargingEstimate() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "IsCharging": true,
+            "TimeRemaining": 42,
+            "AvgTimeToFull": 65_535
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.timeToFullMinutes == 42)
+    }
+
+    @Test func usesAverageTimeToEmptyForDischargeEstimate() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "IsCharging": false,
+            "ExternalConnected": false,
+            "TimeRemaining": 65_535,
+            "AvgTimeToEmpty": 93
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.timeToEmptyMinutes == 93)
+        #expect(snapshot.timeToFullMinutes == nil)
+    }
+
+    @Test func ignoresUnavailableTimeSentinelAndInvalidHealthCapacity() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "TimeRemaining": 65_535,
+            "AvgTimeToFull": -1,
+            "AvgTimeToEmpty": 65_535,
+            "AppleRawMaxCapacity": 4_000,
+            "DesignCapacity": 0
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.timeToFullMinutes == nil)
+        #expect(snapshot.timeToEmptyMinutes == nil)
+        #expect(snapshot.batteryHealthPercent == nil)
+    }
+
     @Test func unavailableSnapshotWhenBatteryIsNotInstalled() {
         let snapshot = BatterySnapshot(properties: [
             "BatteryInstalled": false
@@ -59,5 +106,7 @@ struct BatterySnapshotTests {
         #expect(!snapshot.batteryInstalled)
         #expect(snapshot.batteryPowerWatts == nil)
         #expect(snapshot.stateOfChargePercent == nil)
+        #expect(snapshot.timeToFullMinutes == nil)
+        #expect(snapshot.batteryHealthPercent == nil)
     }
 }

@@ -56,6 +56,11 @@ struct PowerFormatterTests {
             "MaxCapacity": 100,
             "CycleCount": 39,
             "Temperature": 3_024,
+            "TimeRemaining": 37,
+            "AvgTimeToFull": 37,
+            "AvgTimeToEmpty": 65_535,
+            "AppleRawMaxCapacity": 4_626,
+            "DesignCapacity": 4_629,
             "AdapterDetails": [
                 "Watts": 45,
                 "AdapterVoltage": 20_000,
@@ -65,11 +70,43 @@ struct PowerFormatterTests {
 
         #expect(formatter.menuLines(for: snapshot) == [
             "电池侧功率：36.1 W",
-            "适配器档位：45 W（20.0 V / 2.25 A）",
+            "剩余时间：37 分钟后充满",
             "电池：51%，正在充电",
+            "健康度：99.9%（4626 / 4629 mAh）",
+            "循环次数：39",
             "电池电压/电流：12.07 V / 2.99 A",
-            "温度：29.3°C",
-            "循环次数：39"
+            "适配器档位：45 W（20.0 V / 2.25 A）",
+            "温度：29.3°C"
         ])
+    }
+
+    @Test func menuLinesShowDischargingTimeToEmpty() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "ExternalConnected": false,
+            "IsCharging": false,
+            "Voltage": 11_500,
+            "Amperage": -1_200,
+            "CurrentCapacity": 66,
+            "MaxCapacity": 100,
+            "AvgTimeToEmpty": 93
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(formatter.menuLines(for: snapshot).contains("剩余时间：1 小时 33 分钟后耗尽"))
+    }
+
+    @Test func menuLinesShowUnavailableTimeAndHealthWhenMissing() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "ExternalConnected": true,
+            "IsCharging": false,
+            "AdapterDetails": [
+                "Watts": 45
+            ]
+        ], date: Date(timeIntervalSince1970: 0))
+
+        let lines = formatter.menuLines(for: snapshot)
+        #expect(lines.contains("剩余时间：不可用"))
+        #expect(lines.contains("健康度：不可用"))
     }
 }

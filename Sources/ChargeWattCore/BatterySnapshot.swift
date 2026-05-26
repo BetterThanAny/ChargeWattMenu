@@ -12,6 +12,11 @@ public struct BatterySnapshot: Equatable {
     public let stateOfChargePercent: Int?
     public let cycleCount: Int?
     public let temperatureCelsius: Double?
+    public let timeRemainingMinutes: Int?
+    public let avgTimeToFullMinutes: Int?
+    public let avgTimeToEmptyMinutes: Int?
+    public let rawMaxCapacityMilliampHours: Double?
+    public let designCapacityMilliampHours: Double?
     public let adapterWatts: Int?
     public let adapterVoltageMillivolts: Double?
     public let adapterCurrentMilliamps: Double?
@@ -36,12 +41,28 @@ public struct BatterySnapshot: Equatable {
             self.temperatureCelsius = BatterySnapshot.celsiusFromDeciKelvin(
                 BatteryProperty.double(properties["Temperature"])
             )
+            self.timeRemainingMinutes = BatterySnapshot.validMinutes(
+                BatteryProperty.int(properties["TimeRemaining"])
+            )
+            self.avgTimeToFullMinutes = BatterySnapshot.validMinutes(
+                BatteryProperty.int(properties["AvgTimeToFull"])
+            )
+            self.avgTimeToEmptyMinutes = BatterySnapshot.validMinutes(
+                BatteryProperty.int(properties["AvgTimeToEmpty"])
+            )
+            self.rawMaxCapacityMilliampHours = BatteryProperty.double(properties["AppleRawMaxCapacity"])
+            self.designCapacityMilliampHours = BatteryProperty.double(properties["DesignCapacity"])
         } else {
             self.voltageMillivolts = nil
             self.currentMilliamps = nil
             self.stateOfChargePercent = nil
             self.cycleCount = nil
             self.temperatureCelsius = nil
+            self.timeRemainingMinutes = nil
+            self.avgTimeToFullMinutes = nil
+            self.avgTimeToEmptyMinutes = nil
+            self.rawMaxCapacityMilliampHours = nil
+            self.designCapacityMilliampHours = nil
         }
 
         let adapterDetails = BatteryProperty.dictionary(properties["AdapterDetails"])
@@ -79,6 +100,29 @@ public struct BatterySnapshot: Equatable {
         adapterCurrentMilliamps.map { $0 / 1_000 }
     }
 
+    public var timeToFullMinutes: Int? {
+        guard isCharging else {
+            return nil
+        }
+        return avgTimeToFullMinutes ?? timeRemainingMinutes
+    }
+
+    public var timeToEmptyMinutes: Int? {
+        guard !isCharging, !externalConnected else {
+            return nil
+        }
+        return avgTimeToEmptyMinutes ?? timeRemainingMinutes
+    }
+
+    public var batteryHealthPercent: Double? {
+        guard let rawMaxCapacityMilliampHours,
+              let designCapacityMilliampHours,
+              designCapacityMilliampHours > 0 else {
+            return nil
+        }
+        return rawMaxCapacityMilliampHours / designCapacityMilliampHours * 100
+    }
+
     public var stateDescription: String {
         if !batteryInstalled {
             return "not installed"
@@ -110,6 +154,13 @@ public struct BatterySnapshot: Equatable {
             return nil
         }
         return value / 10 - 273.15
+    }
+
+    private static func validMinutes(_ value: Int?) -> Int? {
+        guard let value, value >= 0, value < 65_535 else {
+            return nil
+        }
+        return value
     }
 }
 
