@@ -15,6 +15,16 @@ let package = Package(
         .executable(
             name: "ChargeWattMenu",
             targets: ["ChargeWattMenu"]
+        ),
+        .executable(
+            name: "ChargeWattMenuDaemon",
+            targets: ["ChargeWattMenuDaemon"]
+        )
+    ],
+    dependencies: [
+        .package(
+            url: "https://github.com/Ailogeneous/Battery-Toolkit-SP",
+            revision: "bce4f8692c5b0af23ba23b69338b720f3614b02d"
         )
     ],
     targets: [
@@ -26,9 +36,18 @@ let package = Package(
         ),
         .executableTarget(
             name: "ChargeWattMenu",
-            dependencies: ["ChargeWattCore"],
+            dependencies: [
+                "ChargeWattCore",
+                .product(name: "BatteryToolkit", package: "Battery-Toolkit-SP")
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit")
+            ]
+        ),
+        .executableTarget(
+            name: "ChargeWattMenuDaemon",
+            dependencies: [
+                .product(name: "BatteryToolkit", package: "Battery-Toolkit-SP")
             ]
         ),
         .testTarget(

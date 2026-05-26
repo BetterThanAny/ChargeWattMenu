@@ -1,0 +1,14 @@
+{
+  "originHash" : "f917502f2f171021c402d8d8a8a913a4a5d0c5ec488f8e4323078bc385226e00",
+  "pins" : [
+    {
+      "identity" : "battery-toolkit-sp",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Ailogeneous/Battery-Toolkit-SP",
+      "state" : {
+        "revision" : "bce4f8692c5b0af23ba23b69338b720f3614b02d"
+      }
+    }
+  ],
+  "version" : 3
+}

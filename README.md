@@ -18,6 +18,10 @@ Voltage(mV) * Current(mA) / 1_000_000 = Watts
 - 显示电池健康度、当前最大容量和设计容量
 - 显示循环次数、温度、电压和电流
 - 显示适配器协商档位、电压和电流
+- 设置充电恢复下限和停止充电上限
+- 手动充到上限、充满、停止充电
+- 启用或禁用电源适配器
+- 暂停、恢复或移除后台充电控制 daemon
 - 中文菜单，零配置启动
 
 ## 开发
@@ -31,8 +35,13 @@ swift run ChargeWattMenu
 
 ```zsh
 scripts/package-app.sh
-open .build/release/ChargeWattMenu.app
 ```
+
+如果本机没有 Apple Development 或 Developer ID Application 签名身份，打包脚本会生成
+debug + ad-hoc 签名版本。脚本会打印最终 `.app` 路径；默认路径在
+`${TMPDIR}/ChargeWattMenu-build/<debug|release>/ChargeWattMenu.app`，也可以用
+`BT_APP_OUTPUT_DIR=/path/to/output scripts/package-app.sh` 指定输出目录。首次使用充电控制时，
+macOS 可能会要求在系统设置里批准后台 daemon。
 
 ## 对照 macOS 原始数据验证
 
