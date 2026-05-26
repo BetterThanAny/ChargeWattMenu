@@ -33,7 +33,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private let detailItems = (0 ..< 8).map { _ in NSMenuItem(title: "", action: nil, keyEquivalent: "") }
     private let updatedItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let toggleChargeControlsItem = NSMenuItem(
-        title: "显示充电控制",
+        title: "显示高级充电控制",
         action: #selector(toggleChargeControls),
         keyEquivalent: ""
     )
@@ -42,7 +42,8 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         action: nil,
         keyEquivalent: ""
     )
-    private var chargeControlItems: [NSMenuItem] = []
+    private var coreChargeControlItems: [NSMenuItem] = []
+    private var advancedChargeControlItems: [NSMenuItem] = []
     private var timer: Timer?
     private var snapshot = BatterySnapshot.unavailable()
     private var chargeControlStartTask: Task<Void, Never>?
@@ -56,9 +57,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         configureMenu()
         refresh()
         startTimer()
-        if showsChargeControls {
-            startChargeControl()
-        }
+        startChargeControl()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -116,42 +115,66 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
 
         chargeControlStatusItem.isEnabled = false
         setStatusTitle("充电控制：正在启动")
-        addChargeControlItem(chargeControlStatusItem)
+        addCoreChargeControlItem(chargeControlStatusItem)
 
-        addChargeControlItem(title: "设置充电范围...", action: #selector(setChargeLimits))
-        addChargeControlItem(title: "充到上限", action: #selector(chargeToLimit))
-        addChargeControlItem(title: "充满", action: #selector(chargeToFull))
-        addChargeControlItem(title: "停止充电", action: #selector(stopCharging))
-        addChargeControlItem(.separator())
-        addChargeControlItem(title: "禁用电源适配器", action: #selector(disablePowerAdapter))
-        addChargeControlItem(title: "启用电源适配器", action: #selector(enablePowerAdapter))
-        addChargeControlItem(.separator())
-        addChargeControlItem(title: "暂停后台控制", action: #selector(pauseBackgroundControl))
-        addChargeControlItem(title: "恢复后台控制", action: #selector(resumeBackgroundControl))
-        addChargeControlItem(title: "移除后台 daemon...", action: #selector(removeBackgroundDaemon))
+        addCoreChargeControlItem(title: "设置充电范围...", action: #selector(setChargeLimits))
+        addAdvancedChargeControlItem(title: "充到上限", action: #selector(chargeToLimit))
+        addAdvancedChargeControlItem(title: "充满", action: #selector(chargeToFull))
+        addAdvancedChargeControlItem(title: "停止充电", action: #selector(stopCharging))
+        addAdvancedChargeControlItem(.separator())
+        addAdvancedChargeControlItem(title: "禁用电源适配器", action: #selector(disablePowerAdapter))
+        addAdvancedChargeControlItem(title: "启用电源适配器", action: #selector(enablePowerAdapter))
+        addAdvancedChargeControlItem(.separator())
+        addAdvancedChargeControlItem(title: "暂停后台控制", action: #selector(pauseBackgroundControl))
+        addAdvancedChargeControlItem(title: "恢复后台控制", action: #selector(resumeBackgroundControl))
+        addAdvancedChargeControlItem(title: "移除后台 daemon...", action: #selector(removeBackgroundDaemon))
     }
 
     @discardableResult
-    private func addChargeControlItem(title: String, action: Selector) -> NSMenuItem {
+    private func addCoreChargeControlItem(title: String, action: Selector) -> NSMenuItem {
         let item = menu.addItem(
             withTitle: title,
             action: action,
             keyEquivalent: ""
         )
         item.target = self
-        chargeControlItems.append(item)
+        coreChargeControlItems.append(item)
         return item
     }
 
-    private func addChargeControlItem(_ item: NSMenuItem) {
+    private func addCoreChargeControlItem(_ item: NSMenuItem) {
         menu.addItem(item)
-        chargeControlItems.append(item)
+        coreChargeControlItems.append(item)
+    }
+
+    @discardableResult
+    private func addAdvancedChargeControlItem(title: String, action: Selector) -> NSMenuItem {
+        let item = menu.addItem(
+            withTitle: title,
+            action: action,
+            keyEquivalent: ""
+        )
+        item.target = self
+        advancedChargeControlItems.append(item)
+        return item
+    }
+
+    private func addAdvancedChargeControlItem(_ item: NSMenuItem) {
+        menu.addItem(item)
+        advancedChargeControlItems.append(item)
     }
 
     private func updateChargeControlsVisibility() {
         toggleChargeControlsItem.state = showsChargeControls ? .on : .off
-        for item in chargeControlItems {
-            item.isHidden = !showsChargeControls
+        for item in coreChargeControlItems {
+            item.isHidden = ChargeControlMenuVisibility.isCoreControlHidden(
+                showsAdvancedControls: showsChargeControls
+            )
+        }
+        for item in advancedChargeControlItems {
+            item.isHidden = ChargeControlMenuVisibility.isAdvancedControlHidden(
+                showsAdvancedControls: showsChargeControls
+            )
         }
     }
 
@@ -168,7 +191,13 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         let client = chargeControl
         setStatusTitle("充电控制：正在启动")
         chargeControlStartTask = Task {
-            let status = await client.startDaemon()
+            defer {
+                Task { @MainActor in
+                    self.chargeControlStartTask = nil
+                }
+            }
+
+            let status = await client.repairDaemonRegistration()
             await MainActor.run {
                 self.updateChargeControlStatus(status)
             }
@@ -190,10 +219,6 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
                         error: ChargeControlError.daemonRequiresApproval
                     )
                 }
-            }
-
-            await MainActor.run {
-                self.chargeControlStartTask = nil
             }
         }
     }
@@ -241,17 +266,34 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
 
     @objc private func setChargeLimits() {
         let client = chargeControl
+        setStatusTitle("充电控制：读取当前范围")
+
         Task {
-            let currentLimits = (try? await client.currentLimits()) ?? .defaults
+            do {
+                try await client.prepareForAction(approvalTimeout: 6)
+                let currentLimits = try await client.currentLimits()
 
-            guard let limits = await MainActor.run(body: {
-                self.promptChargeLimits(current: currentLimits)
-            }) else {
-                return
-            }
+                guard let limits = await MainActor.run(body: {
+                    self.promptChargeLimits(current: currentLimits)
+                }) else {
+                    await MainActor.run {
+                        self.setStatusTitle("充电控制：已取消")
+                    }
+                    return
+                }
 
-            self.runControlAction("设置充电范围") { client in
-                try await client.setLimits(limits)
+                await MainActor.run {
+                    self.setStatusTitle("充电控制：设置充电范围中")
+                }
+                let result = try await client.setLimitsAndApply(limits)
+                await MainActor.run {
+                    self.setStatusTitle(self.chargeLimitStatusTitle(for: result))
+                }
+            } catch {
+                await MainActor.run {
+                    self.setStatusTitle("充电控制：设置充电范围失败")
+                    self.showError(title: "设置充电范围失败", error: error)
+                }
             }
         }
     }
@@ -438,6 +480,21 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
             return "停止充电上限不能高于 100%。"
         case .minChargeAboveMaxCharge:
             return "恢复充电下限不能高于停止充电上限。"
+        }
+    }
+
+    private func chargeLimitStatusTitle(
+        for result: ChargeLimitApplicationResult
+    ) -> String {
+        switch result {
+        case .stoppedCharging:
+            return "充电控制：已停止继续充电"
+        case .chargingToLimit:
+            return "充电控制：正在充到上限"
+        case .waitingToDropBelowLowerLimit:
+            return "充电控制：等待低于下限"
+        case .stateUnavailable:
+            return "充电控制：范围已保存"
         }
     }
 

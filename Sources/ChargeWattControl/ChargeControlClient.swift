@@ -1,10 +1,40 @@
 import BatteryToolkit
 import ChargeWattCore
 import Foundation
+import ServiceManagement
 
 public enum ChargeControlError: Error, Equatable {
     case daemonNotRegistered
     case daemonRequiresApproval
+}
+
+public struct ChargeControlState: Equatable, Sendable {
+    public let batteryPercent: Int?
+    public let isCharging: Bool?
+    public let isACConnected: Bool?
+    public let chargingDisabled: Bool?
+    public let maxCharge: Int?
+
+    public init(
+        batteryPercent: Int?,
+        isCharging: Bool?,
+        isACConnected: Bool?,
+        chargingDisabled: Bool?,
+        maxCharge: Int?
+    ) {
+        self.batteryPercent = batteryPercent
+        self.isCharging = isCharging
+        self.isACConnected = isACConnected
+        self.chargingDisabled = chargingDisabled
+        self.maxCharge = maxCharge
+    }
+}
+
+public enum ChargeLimitApplicationResult: Equatable, Sendable {
+    case stoppedCharging
+    case chargingToLimit
+    case waitingToDropBelowLowerLimit
+    case stateUnavailable
 }
 
 extension ChargeControlError: LocalizedError {
@@ -34,6 +64,18 @@ public struct ChargeControlClient: Sendable {
                 self = .notRegistered
             }
         }
+
+        @available(macOS 13.0, *)
+        init(_ status: SMAppService.Status) {
+            switch status {
+            case .enabled:
+                self = .enabled
+            case .requiresApproval:
+                self = .requiresApproval
+            default:
+                self = .notRegistered
+            }
+        }
     }
 
     private let actions: any ChargeControlActions
@@ -50,12 +92,16 @@ public struct ChargeControlClient: Sendable {
         await actions.startDaemon()
     }
 
+    public func repairDaemonRegistration() async -> DaemonStatus {
+        await actions.repairDaemonRegistration()
+    }
+
     public func approveDaemon(timeout: UInt8) async throws {
         try await actions.approveDaemon(timeout: timeout)
     }
 
     public func prepareForAction(approvalTimeout: UInt8 = 6) async throws {
-        switch await actions.startDaemon() {
+        switch await actions.repairDaemonRegistration() {
         case .enabled:
             return
         case .requiresApproval:
@@ -74,38 +120,76 @@ public struct ChargeControlClient: Sendable {
     }
 
     public func currentLimits() async throws -> ChargeLimitSettings {
-        try await actions.currentLimits()
+        await actions.prepareRequestConnection()
+        return try await actions.currentLimits()
+    }
+
+    public func currentState() async throws -> ChargeControlState {
+        await actions.prepareRequestConnection()
+        return try await actions.currentState()
     }
 
     public func setLimits(_ limits: ChargeLimitSettings) async throws {
+        await actions.prepareRequestConnection()
         try await actions.setLimits(limits)
     }
 
+    public func setLimitsAndApply(
+        _ limits: ChargeLimitSettings
+    ) async throws -> ChargeLimitApplicationResult {
+        await actions.prepareRequestConnection()
+        try await actions.setLimits(limits)
+
+        let state = try await actions.currentState()
+        guard let batteryPercent = state.batteryPercent else {
+            return .stateUnavailable
+        }
+
+        if batteryPercent >= limits.maxCharge {
+            try await actions.disableCharging()
+            return .stoppedCharging
+        }
+
+        if batteryPercent < limits.minCharge {
+            try await actions.chargeToLimit()
+            return .chargingToLimit
+        }
+
+        return .waitingToDropBelowLowerLimit
+    }
+
     public func chargeToLimit() async throws {
+        await actions.prepareRequestConnection()
         try await actions.chargeToLimit()
     }
 
     public func chargeToFull() async throws {
+        await actions.prepareRequestConnection()
         try await actions.chargeToFull()
     }
 
     public func disableCharging() async throws {
+        await actions.prepareRequestConnection()
         try await actions.disableCharging()
     }
 
     public func disablePowerAdapter() async throws {
+        await actions.prepareRequestConnection()
         try await actions.disablePowerAdapter()
     }
 
     public func enablePowerAdapter() async throws {
+        await actions.prepareRequestConnection()
         try await actions.enablePowerAdapter()
     }
 
     public func pauseActivity() async throws {
+        await actions.prepareRequestConnection()
         try await actions.pauseActivity()
     }
 
     public func resumeActivity() async throws {
+        await actions.prepareRequestConnection()
         try await actions.resumeActivity()
     }
 
@@ -116,9 +200,12 @@ public struct ChargeControlClient: Sendable {
 
 protocol ChargeControlActions: Sendable {
     func startDaemon() async -> ChargeControlClient.DaemonStatus
+    func repairDaemonRegistration() async -> ChargeControlClient.DaemonStatus
+    func prepareRequestConnection() async
     func approveDaemon(timeout: UInt8) async throws
     func stop() async
     func currentLimits() async throws -> ChargeLimitSettings
+    func currentState() async throws -> ChargeControlState
     func setLimits(_ limits: ChargeLimitSettings) async throws
     func chargeToLimit() async throws
     func chargeToFull() async throws
@@ -135,12 +222,54 @@ private struct BatteryToolkitChargeControlActions: ChargeControlActions {
         await ChargeControlClient.DaemonStatus(BTActions.startDaemon())
     }
 
+    func repairDaemonRegistration() async -> ChargeControlClient.DaemonStatus {
+        guard #available(macOS 13.0, *) else {
+            return await startDaemon()
+        }
+
+        let daemonId = Bundle.main.object(
+            forInfoDictionaryKey: "BT_DAEMON_ID"
+        ) as? String ?? "top.xsdev.ChargeWattMenu.control-daemon"
+        let plistName = "\(daemonId).plist"
+
+        let currentStatus = ChargeControlClient.DaemonStatus(
+            SMAppService.daemon(plistName: plistName).status
+        )
+        if currentStatus != .notRegistered {
+            return currentStatus
+        }
+
+        for _ in 0 ... 5 {
+            let appService = SMAppService.daemon(plistName: plistName)
+            do {
+                try appService.register()
+            } catch {
+                // Re-check status after failed registration; an already registered
+                // service can still be enabled or waiting for user approval.
+            }
+
+            let status = ChargeControlClient.DaemonStatus(appService.status)
+            if status != .notRegistered {
+                return status
+            }
+
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+
+        return .notRegistered
+    }
+
     func approveDaemon(timeout: UInt8) async throws {
         try await BTActions.approveDaemon(timeout: timeout)
     }
 
     func stop() async {
+        await BTDaemonXPCClient.stopEventStream()
         await BTActions.stop()
+    }
+
+    func prepareRequestConnection() async {
+        await BTDaemonXPCClient.startEventStream { _ in }
     }
 
     func currentLimits() async throws -> ChargeLimitSettings {
@@ -157,6 +286,17 @@ private struct BatteryToolkitChargeControlActions: ChargeControlActions {
         return try ChargeLimitSettings(
             minCharge: minCharge,
             maxCharge: maxCharge
+        )
+    }
+
+    func currentState() async throws -> ChargeControlState {
+        let state = try await BTActions.getState()
+        return ChargeControlState(
+            batteryPercent: Self.intValue(state[BTStateInfo.Keys.batteryPercent]),
+            isCharging: Self.boolValue(state[BTStateInfo.Keys.isCharging]),
+            isACConnected: Self.boolValue(state[BTStateInfo.Keys.isACConnected]),
+            chargingDisabled: Self.boolValue(state[BTStateInfo.Keys.chargingDisabled]),
+            maxCharge: Self.intValue(state[BTStateInfo.Keys.maxCharge])
         )
     }
 
@@ -203,10 +343,22 @@ private struct BatteryToolkitChargeControlActions: ChargeControlActions {
         _ value: (NSObject & Sendable)?,
         default defaultValue: Int
     ) -> Int {
+        intValue(value) ?? defaultValue
+    }
+
+    private static func intValue(_ value: (NSObject & Sendable)?) -> Int? {
         guard let number = value as? NSNumber else {
-            return defaultValue
+            return nil
         }
 
         return number.intValue
+    }
+
+    private static func boolValue(_ value: (NSObject & Sendable)?) -> Bool? {
+        guard let number = value as? NSNumber else {
+            return nil
+        }
+
+        return number.boolValue
     }
 }
