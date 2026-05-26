@@ -12,6 +12,10 @@ let package = Package(
             name: "ChargeWattCore",
             targets: ["ChargeWattCore"]
         ),
+        .library(
+            name: "ChargeWattControl",
+            targets: ["ChargeWattControl"]
+        ),
         .executable(
             name: "ChargeWattMenu",
             targets: ["ChargeWattMenu"]
@@ -34,11 +38,18 @@ let package = Package(
                 .linkedFramework("IOKit")
             ]
         ),
+        .target(
+            name: "ChargeWattControl",
+            dependencies: [
+                "ChargeWattCore",
+                .product(name: "BatteryToolkit", package: "Battery-Toolkit-SP")
+            ]
+        ),
         .executableTarget(
             name: "ChargeWattMenu",
             dependencies: [
                 "ChargeWattCore",
-                .product(name: "BatteryToolkit", package: "Battery-Toolkit-SP")
+                "ChargeWattControl"
             ],
             linkerSettings: [
                 .linkedFramework("AppKit")
@@ -53,6 +64,10 @@ let package = Package(
         .testTarget(
             name: "ChargeWattCoreTests",
             dependencies: ["ChargeWattCore"]
+        ),
+        .testTarget(
+            name: "ChargeWattControlTests",
+            dependencies: ["ChargeWattControl"]
         )
     ]
 )

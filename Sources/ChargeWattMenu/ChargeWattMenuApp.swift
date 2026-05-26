@@ -1,4 +1,5 @@
 import AppKit
+import ChargeWattControl
 import ChargeWattCore
 import Foundation
 
@@ -44,7 +45,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private var chargeControlItems: [NSMenuItem] = []
     private var timer: Timer?
     private var snapshot = BatterySnapshot.unavailable()
-    private var chargeControlStarted = false
+    private var chargeControlStartTask: Task<Void, Never>?
 
     private var showsChargeControls: Bool {
         UserDefaults.standard.bool(forKey: PreferenceKey.showChargeControls)
@@ -113,7 +114,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         toggleChargeControlsItem.target = self
         menu.addItem(toggleChargeControlsItem)
 
-        chargeControlStatusItem.isEnabled = true
+        chargeControlStatusItem.isEnabled = false
         setStatusTitle("充电控制：正在启动")
         addChargeControlItem(chargeControlStatusItem)
 
@@ -154,26 +155,19 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         }
     }
 
-    private func setStatusTitle(
-        _ title: String,
-        color: NSColor = .labelColor
-    ) {
+    private func setStatusTitle(_ title: String) {
         chargeControlStatusItem.title = title
-        chargeControlStatusItem.attributedTitle = attributedMenuTitle(
-            title,
-            color: color,
-            weight: .medium
-        )
+        chargeControlStatusItem.isEnabled = false
     }
 
     private func startChargeControl() {
-        guard !chargeControlStarted else {
+        guard chargeControlStartTask == nil else {
             return
         }
 
-        chargeControlStarted = true
         let client = chargeControl
-        Task {
+        setStatusTitle("充电控制：正在启动")
+        chargeControlStartTask = Task {
             let status = await client.startDaemon()
             await MainActor.run {
                 self.updateChargeControlStatus(status)
@@ -190,15 +184,16 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
                 }
             } catch {
                 await MainActor.run {
-                    self.setStatusTitle(
-                        "充电控制：等待系统设置批准",
-                        color: .systemOrange
-                    )
+                    self.setStatusTitle("充电控制：等待系统设置批准")
                     self.showError(
                         title: "需要批准后台控制",
-                        error: error
+                        error: ChargeControlError.daemonRequiresApproval
                     )
                 }
+            }
+
+            await MainActor.run {
+                self.chargeControlStartTask = nil
             }
         }
     }
@@ -208,9 +203,9 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         case .enabled:
             setStatusTitle("充电控制：已启用")
         case .requiresApproval:
-            setStatusTitle("充电控制：需要批准", color: .systemOrange)
+            setStatusTitle("充电控制：需要批准")
         case .notRegistered:
-            setStatusTitle("充电控制：未注册", color: .systemOrange)
+            setStatusTitle("充电控制：未注册")
         }
     }
 
@@ -349,20 +344,21 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         operation: @escaping @Sendable (ChargeControlClient) async throws -> Void
     ) {
         let client = chargeControl
-        setStatusTitle("充电控制：\(title)中")
+        setStatusTitle("充电控制：\(title)准备中")
 
         Task {
             do {
+                try await client.prepareForAction(approvalTimeout: 6)
+                await MainActor.run {
+                    self.setStatusTitle("充电控制：\(title)中")
+                }
                 try await operation(client)
                 await MainActor.run {
                     self.setStatusTitle("充电控制：\(title)已发送")
                 }
             } catch {
                 await MainActor.run {
-                    self.setStatusTitle(
-                        "充电控制：\(title)失败",
-                        color: .systemRed
-                    )
+                    self.setStatusTitle("充电控制：\(title)失败")
                     self.showError(title: "\(title)失败", error: error)
                 }
             }
@@ -470,21 +466,6 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
 
     private func setInformationTitle(_ item: NSMenuItem, _ title: String) {
         item.title = title
-        item.isEnabled = true
-        item.attributedTitle = attributedMenuTitle(title, color: .labelColor)
-    }
-
-    private func attributedMenuTitle(
-        _ title: String,
-        color: NSColor,
-        weight: NSFont.Weight = .regular
-    ) -> NSAttributedString {
-        NSAttributedString(
-            string: title,
-            attributes: [
-                .foregroundColor: color,
-                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: weight)
-            ]
-        )
+        item.isEnabled = false
     }
 }
