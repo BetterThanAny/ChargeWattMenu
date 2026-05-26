@@ -20,6 +20,10 @@ struct ChargeWattMenuApp {
 
 @MainActor
 final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private enum PreferenceKey {
+        static let showChargeControls = "showChargeControls"
+    }
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let reader = BatteryPowerReader()
     private let formatter = PowerFormatter()
@@ -27,20 +31,33 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private let menu = NSMenu()
     private let detailItems = (0 ..< 8).map { _ in NSMenuItem(title: "", action: nil, keyEquivalent: "") }
     private let updatedItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let toggleChargeControlsItem = NSMenuItem(
+        title: "显示充电控制",
+        action: #selector(toggleChargeControls),
+        keyEquivalent: ""
+    )
     private let chargeControlStatusItem = NSMenuItem(
         title: "充电控制：正在启动",
         action: nil,
         keyEquivalent: ""
     )
+    private var chargeControlItems: [NSMenuItem] = []
     private var timer: Timer?
     private var snapshot = BatterySnapshot.unavailable()
+    private var chargeControlStarted = false
+
+    private var showsChargeControls: Bool {
+        UserDefaults.standard.bool(forKey: PreferenceKey.showChargeControls)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
         configureMenu()
         refresh()
         startTimer()
-        startChargeControl()
+        if showsChargeControls {
+            startChargeControl()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -75,6 +92,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         menu.addItem(updatedItem)
         menu.addItem(.separator())
         configureChargeControlMenu()
+        updateChargeControlsVisibility()
         menu.addItem(.separator())
         menu.addItem(
             withTitle: "立即刷新",
@@ -92,34 +110,68 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     }
 
     private func configureChargeControlMenu() {
-        chargeControlStatusItem.isEnabled = false
-        menu.addItem(chargeControlStatusItem)
+        toggleChargeControlsItem.target = self
+        menu.addItem(toggleChargeControlsItem)
 
-        addMenuItem(title: "设置充电范围...", action: #selector(setChargeLimits))
-        addMenuItem(title: "充到上限", action: #selector(chargeToLimit))
-        addMenuItem(title: "充满", action: #selector(chargeToFull))
-        addMenuItem(title: "停止充电", action: #selector(stopCharging))
-        menu.addItem(.separator())
-        addMenuItem(title: "禁用电源适配器", action: #selector(disablePowerAdapter))
-        addMenuItem(title: "启用电源适配器", action: #selector(enablePowerAdapter))
-        menu.addItem(.separator())
-        addMenuItem(title: "暂停后台控制", action: #selector(pauseBackgroundControl))
-        addMenuItem(title: "恢复后台控制", action: #selector(resumeBackgroundControl))
-        addMenuItem(title: "移除后台 daemon...", action: #selector(removeBackgroundDaemon))
+        chargeControlStatusItem.isEnabled = true
+        setStatusTitle("充电控制：正在启动")
+        addChargeControlItem(chargeControlStatusItem)
+
+        addChargeControlItem(title: "设置充电范围...", action: #selector(setChargeLimits))
+        addChargeControlItem(title: "充到上限", action: #selector(chargeToLimit))
+        addChargeControlItem(title: "充满", action: #selector(chargeToFull))
+        addChargeControlItem(title: "停止充电", action: #selector(stopCharging))
+        addChargeControlItem(.separator())
+        addChargeControlItem(title: "禁用电源适配器", action: #selector(disablePowerAdapter))
+        addChargeControlItem(title: "启用电源适配器", action: #selector(enablePowerAdapter))
+        addChargeControlItem(.separator())
+        addChargeControlItem(title: "暂停后台控制", action: #selector(pauseBackgroundControl))
+        addChargeControlItem(title: "恢复后台控制", action: #selector(resumeBackgroundControl))
+        addChargeControlItem(title: "移除后台 daemon...", action: #selector(removeBackgroundDaemon))
     }
 
     @discardableResult
-    private func addMenuItem(title: String, action: Selector) -> NSMenuItem {
+    private func addChargeControlItem(title: String, action: Selector) -> NSMenuItem {
         let item = menu.addItem(
             withTitle: title,
             action: action,
             keyEquivalent: ""
         )
         item.target = self
+        chargeControlItems.append(item)
         return item
     }
 
+    private func addChargeControlItem(_ item: NSMenuItem) {
+        menu.addItem(item)
+        chargeControlItems.append(item)
+    }
+
+    private func updateChargeControlsVisibility() {
+        toggleChargeControlsItem.state = showsChargeControls ? .on : .off
+        for item in chargeControlItems {
+            item.isHidden = !showsChargeControls
+        }
+    }
+
+    private func setStatusTitle(
+        _ title: String,
+        color: NSColor = .labelColor
+    ) {
+        chargeControlStatusItem.title = title
+        chargeControlStatusItem.attributedTitle = attributedMenuTitle(
+            title,
+            color: color,
+            weight: .medium
+        )
+    }
+
     private func startChargeControl() {
+        guard !chargeControlStarted else {
+            return
+        }
+
+        chargeControlStarted = true
         let client = chargeControl
         Task {
             let status = await client.startDaemon()
@@ -134,11 +186,14 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
             do {
                 try await client.approveDaemon(timeout: 6)
                 await MainActor.run {
-                    self.chargeControlStatusItem.title = "充电控制：已启用"
+                    self.setStatusTitle("充电控制：已启用")
                 }
             } catch {
                 await MainActor.run {
-                    self.chargeControlStatusItem.title = "充电控制：等待系统设置批准"
+                    self.setStatusTitle(
+                        "充电控制：等待系统设置批准",
+                        color: .systemOrange
+                    )
                     self.showError(
                         title: "需要批准后台控制",
                         error: error
@@ -151,11 +206,11 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private func updateChargeControlStatus(_ status: ChargeControlClient.DaemonStatus) {
         switch status {
         case .enabled:
-            chargeControlStatusItem.title = "充电控制：已启用"
+            setStatusTitle("充电控制：已启用")
         case .requiresApproval:
-            chargeControlStatusItem.title = "充电控制：需要批准"
+            setStatusTitle("充电控制：需要批准", color: .systemOrange)
         case .notRegistered:
-            chargeControlStatusItem.title = "充电控制：未注册"
+            setStatusTitle("充电控制：未注册", color: .systemOrange)
         }
     }
 
@@ -177,6 +232,16 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
 
     @objc private func refreshNow() {
         refresh()
+    }
+
+    @objc private func toggleChargeControls() {
+        let shouldShow = !showsChargeControls
+        UserDefaults.standard.set(shouldShow, forKey: PreferenceKey.showChargeControls)
+        updateChargeControlsVisibility()
+
+        if shouldShow {
+            startChargeControl()
+        }
     }
 
     @objc private func setChargeLimits() {
@@ -265,14 +330,18 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private func updateMenuItems() {
         let lines = formatter.menuLines(for: snapshot)
         for (index, item) in detailItems.enumerated() {
-            item.title = index < lines.count ? lines[index] : ""
+            let title = index < lines.count ? lines[index] : ""
+            setInformationTitle(item, title)
             item.isHidden = item.title.isEmpty
         }
 
         let dateFormatter = DateFormatter()
         dateFormatter.dateStyle = .none
         dateFormatter.timeStyle = .medium
-        updatedItem.title = "更新时间：\(dateFormatter.string(from: snapshot.date))"
+        setInformationTitle(
+            updatedItem,
+            "更新时间：\(dateFormatter.string(from: snapshot.date))"
+        )
     }
 
     private func runControlAction(
@@ -280,17 +349,20 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         operation: @escaping @Sendable (ChargeControlClient) async throws -> Void
     ) {
         let client = chargeControl
-        chargeControlStatusItem.title = "充电控制：\(title)中"
+        setStatusTitle("充电控制：\(title)中")
 
         Task {
             do {
                 try await operation(client)
                 await MainActor.run {
-                    self.chargeControlStatusItem.title = "充电控制：\(title)已发送"
+                    self.setStatusTitle("充电控制：\(title)已发送")
                 }
             } catch {
                 await MainActor.run {
-                    self.chargeControlStatusItem.title = "充电控制：操作失败"
+                    self.setStatusTitle(
+                        "充电控制：\(title)失败",
+                        color: .systemRed
+                    )
                     self.showError(title: "\(title)失败", error: error)
                 }
             }
@@ -394,5 +466,25 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         alert.alertStyle = .warning
         alert.addButton(withTitle: "好")
         alert.runModal()
+    }
+
+    private func setInformationTitle(_ item: NSMenuItem, _ title: String) {
+        item.title = title
+        item.isEnabled = true
+        item.attributedTitle = attributedMenuTitle(title, color: .labelColor)
+    }
+
+    private func attributedMenuTitle(
+        _ title: String,
+        color: NSColor,
+        weight: NSFont.Weight = .regular
+    ) -> NSAttributedString {
+        NSAttributedString(
+            string: title,
+            attributes: [
+                .foregroundColor: color,
+                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: weight)
+            ]
+        )
     }
 }

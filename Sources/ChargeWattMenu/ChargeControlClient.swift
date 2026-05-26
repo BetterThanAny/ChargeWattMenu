@@ -50,10 +50,10 @@ struct ChargeControlClient: Sendable {
     }
 
     func setLimits(_ limits: ChargeLimitSettings) async throws {
-        try await BTActions.setSettings(settings: [
-            BTSettingsInfo.Keys.minCharge: NSNumber(value: limits.minCharge),
-            BTSettingsInfo.Keys.maxCharge: NSNumber(value: limits.maxCharge)
-        ])
+        var settings = try await BTActions.getSettings()
+        settings[BTSettingsInfo.Keys.minCharge] = NSNumber(value: limits.minCharge)
+        settings[BTSettingsInfo.Keys.maxCharge] = NSNumber(value: limits.maxCharge)
+        try await BTActions.setSettings(settings: settings)
     }
 
     func chargeToLimit() async throws {
