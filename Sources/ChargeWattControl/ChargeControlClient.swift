@@ -101,7 +101,7 @@ public struct ChargeControlClient: Sendable {
     }
 
     public func prepareForAction(approvalTimeout: UInt8 = 6) async throws {
-        switch await actions.repairDaemonRegistration() {
+        switch await actions.startDaemon() {
         case .enabled:
             return
         case .requiresApproval:
@@ -223,8 +223,13 @@ private struct BatteryToolkitChargeControlActions: ChargeControlActions {
     }
 
     func repairDaemonRegistration() async -> ChargeControlClient.DaemonStatus {
+        let updateAwareStatus = await startDaemon()
+        guard updateAwareStatus == .notRegistered else {
+            return updateAwareStatus
+        }
+
         guard #available(macOS 13.0, *) else {
-            return await startDaemon()
+            return updateAwareStatus
         }
 
         let daemonId = Bundle.main.object(

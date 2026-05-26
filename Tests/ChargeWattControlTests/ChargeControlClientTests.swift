@@ -11,7 +11,8 @@ struct ChargeControlClientTests {
 
         try await client.prepareForAction(approvalTimeout: 3)
 
-        #expect(actions.repairDaemonRegistrationCallCount == 1)
+        #expect(actions.startDaemonCallCount == 1)
+        #expect(actions.repairDaemonRegistrationCallCount == 0)
         #expect(actions.approveTimeouts.isEmpty)
     }
 
@@ -21,7 +22,8 @@ struct ChargeControlClientTests {
 
         try await client.prepareForAction(approvalTimeout: 7)
 
-        #expect(actions.repairDaemonRegistrationCallCount == 1)
+        #expect(actions.startDaemonCallCount == 1)
+        #expect(actions.repairDaemonRegistrationCallCount == 0)
         #expect(actions.approveTimeouts == [7])
     }
 
@@ -32,6 +34,8 @@ struct ChargeControlClientTests {
         await #expect(throws: ChargeControlError.daemonNotRegistered) {
             try await client.prepareForAction(approvalTimeout: 3)
         }
+        #expect(actions.startDaemonCallCount == 1)
+        #expect(actions.repairDaemonRegistrationCallCount == 0)
         #expect(actions.setLimitsCallCount == 0)
     }
 
@@ -178,6 +182,7 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
     func startDaemon() async -> ChargeControlClient.DaemonStatus {
         lock.withLock {
             startDaemonCallCount += 1
+            callOrder.append("startDaemon")
             return startStatuses.isEmpty ? .enabled : startStatuses.removeFirst()
         }
     }

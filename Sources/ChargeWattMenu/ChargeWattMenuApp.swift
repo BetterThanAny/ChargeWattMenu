@@ -57,7 +57,9 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         configureMenu()
         refresh()
         startTimer()
-        startChargeControl()
+        if ChargeControlMenuVisibility.shouldStartDaemonOnApplicationLaunch() {
+            startChargeControl()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -114,7 +116,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         menu.addItem(toggleChargeControlsItem)
 
         chargeControlStatusItem.isEnabled = false
-        setStatusTitle("充电控制：正在启动")
+        setStatusTitle("充电控制：按需启用")
         addCoreChargeControlItem(chargeControlStatusItem)
 
         addCoreChargeControlItem(title: "设置充电范围...", action: #selector(setChargeLimits))
@@ -197,28 +199,9 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
                 }
             }
 
-            let status = await client.repairDaemonRegistration()
+            let status = await client.startDaemon()
             await MainActor.run {
                 self.updateChargeControlStatus(status)
-            }
-
-            guard status == .requiresApproval else {
-                return
-            }
-
-            do {
-                try await client.approveDaemon(timeout: 6)
-                await MainActor.run {
-                    self.setStatusTitle("充电控制：已启用")
-                }
-            } catch {
-                await MainActor.run {
-                    self.setStatusTitle("充电控制：等待系统设置批准")
-                    self.showError(
-                        title: "需要批准后台控制",
-                        error: ChargeControlError.daemonRequiresApproval
-                    )
-                }
             }
         }
     }
@@ -259,7 +242,10 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         UserDefaults.standard.set(shouldShow, forKey: PreferenceKey.showChargeControls)
         updateChargeControlsVisibility()
 
-        if shouldShow {
+        if shouldShow,
+           ChargeControlMenuVisibility.shouldStartDaemonWhenShowingAdvancedControls(
+               showsAdvancedControls: shouldShow
+           ) {
             startChargeControl()
         }
     }
