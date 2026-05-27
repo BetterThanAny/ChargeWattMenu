@@ -25,6 +25,9 @@ Voltage(mV) * Current(mA) / 1_000_000 = Watts
 - 充电控制菜单可按需显示或隐藏
 - 中文菜单，零配置启动
 
+<img width="614" height="1098" alt="image" src="https://github.com/user-attachments/assets/f90b6479-c99f-4270-a2d6-75be801cfc1c" />
+
+
 ## 开发
 
 ```zsh
