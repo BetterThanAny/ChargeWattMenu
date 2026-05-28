@@ -30,7 +30,7 @@ struct PowerFormatterTests {
         #expect(formatter.statusTitle(for: snapshot) == "-13.8W")
     }
 
-    @Test func statusTitleShowsAdapterInChineseWhenConnectedButNoCurrentIsAvailable() {
+    @Test func statusTitleShowsCompactAdapterPowerWhenConnectedButNoCurrentIsAvailable() {
         let snapshot = BatterySnapshot(properties: [
             "BatteryInstalled": true,
             "ExternalConnected": true,
@@ -40,7 +40,7 @@ struct PowerFormatterTests {
             ]
         ], date: Date(timeIntervalSince1970: 0))
 
-        #expect(formatter.statusTitle(for: snapshot) == "接电45W")
+        #expect(formatter.statusTitle(for: snapshot) == "AC45W")
     }
 
     @Test func menuLinesContainReadableChineseDetails() {
@@ -70,9 +70,9 @@ struct PowerFormatterTests {
 
         #expect(formatter.menuLines(for: snapshot) == [
             "电池侧功率：36.1 W",
-            "剩余时间：37 分钟后充满",
+            "剩余时间：37分钟后充满",
             "电池：51%，正在充电",
-            "健康度：99.9%（4626 / 4629 mAh）",
+            "健康度：99.9%（4626 / 4629）",
             "循环次数：39",
             "电池电压/电流：12.07 V / 2.99 A",
             "适配器档位：45 W（20.0 V / 2.25 A）",
@@ -92,7 +92,7 @@ struct PowerFormatterTests {
             "AvgTimeToEmpty": 93
         ], date: Date(timeIntervalSince1970: 0))
 
-        #expect(formatter.menuLines(for: snapshot).contains("剩余时间：1 小时 33 分钟后耗尽"))
+        #expect(formatter.menuLines(for: snapshot).contains("剩余时间：1小时33分钟后耗尽"))
     }
 
     @Test func menuLinesShowUnavailableTimeAndHealthWhenMissing() {

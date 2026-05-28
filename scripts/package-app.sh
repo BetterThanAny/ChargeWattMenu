@@ -22,42 +22,63 @@ detect_signing_identity() {
 }
 
 SIGN_IDENTITY="$(detect_signing_identity)"
-if [[ -z "${SIGN_IDENTITY}" ]]; then
+if [[ -z "${SIGN_IDENTITY}" || "${SIGN_IDENTITY}" == "-" ]]; then
+    if [[ "${BT_ALLOW_ADHOC_CHARGE_CONTROL:-0}" != "1" ]]; then
+        echo "No Apple signing identity found." >&2
+        echo "Refusing to build charge-control daemon with ad-hoc signing by default." >&2
+        echo "For local-only testing, rerun with BT_ALLOW_ADHOC_CHARGE_CONTROL=1." >&2
+        exit 2
+    fi
     SIGN_IDENTITY="-"
     BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-debug}"
     CODESIGN_CN="${BT_CODESIGN_CN:--}"
-    echo "No Apple signing identity found; building a debug app with ad-hoc signing." >&2
-    echo "Battery control is intended for local testing in this mode." >&2
+    DAEMON_AUTH_REQUIREMENT="identifier \"${APP_ID}\""
+    echo "No Apple signing identity found; building a local-only debug app with ad-hoc signing." >&2
+    echo "Do not distribute or install this build for production use." >&2
 else
     BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
     CODESIGN_CN="${BT_CODESIGN_CN:-${SIGN_IDENTITY}}"
+    DAEMON_AUTH_REQUIREMENT="identifier \"${APP_ID}\" and anchor apple generic and certificate leaf[subject.CN] = \"${CODESIGN_CN}\" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */"
 fi
 
 BUILD_DIR="${ROOT_DIR}/.build/${BUILD_CONFIGURATION}"
 DEFAULT_OUTPUT_DIR="${TMPDIR:-/tmp}/ChargeWattMenu-build/${BUILD_CONFIGURATION}"
 APP_OUTPUT_DIR="${BT_APP_OUTPUT_DIR:-${DEFAULT_OUTPUT_DIR}}"
-INSTALLED_APP_DIR="${BT_INSTALLED_APP_DIR:-/Applications/${APP_NAME}.app}"
 APP_DIR="${APP_OUTPUT_DIR}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 LAUNCH_DAEMONS_DIR="${CONTENTS_DIR}/Library/LaunchDaemons"
+DAEMON_INFO_PLIST="${APP_OUTPUT_DIR}/${DAEMON_NAME}-Info.plist"
 
 cd "${ROOT_DIR}"
+mkdir -p "${APP_OUTPUT_DIR}"
+
+plutil -create xml1 "${DAEMON_INFO_PLIST}"
+plutil -insert CFBundleIdentifier -string "${DAEMON_ID}" "${DAEMON_INFO_PLIST}"
+plutil -insert CFBundleExecutable -string "${DAEMON_NAME}" "${DAEMON_INFO_PLIST}"
+plutil -insert CFBundleName -string "${DAEMON_NAME}" "${DAEMON_INFO_PLIST}"
+plutil -insert CFBundlePackageType -string XPC! "${DAEMON_INFO_PLIST}"
+plutil -insert BT_APP_ID -string "${APP_ID}" "${DAEMON_INFO_PLIST}"
+plutil -insert BT_DAEMON_ID -string "${DAEMON_ID}" "${DAEMON_INFO_PLIST}"
+plutil -insert BT_DAEMON_CONN -string "${DAEMON_CONN}" "${DAEMON_INFO_PLIST}"
+plutil -insert BT_CODESIGN_CN -string "${CODESIGN_CN}" "${DAEMON_INFO_PLIST}"
+plutil -insert LSMachServices -xml "<dict><key>${DAEMON_CONN}</key><true/></dict>" "${DAEMON_INFO_PLIST}"
+plutil -insert SMAuthorizedClients -array "${DAEMON_INFO_PLIST}"
+plutil -insert SMAuthorizedClients.0 -string "${DAEMON_AUTH_REQUIREMENT}" "${DAEMON_INFO_PLIST}"
+plutil -insert SMAssociatedBundleIdentifiers -array "${DAEMON_INFO_PLIST}"
+plutil -insert SMAssociatedBundleIdentifiers.0 -string "${APP_ID}" "${DAEMON_INFO_PLIST}"
+
 swift build -c "${BUILD_CONFIGURATION}" --product "${APP_NAME}"
-swift build -c "${BUILD_CONFIGURATION}" --product "${DAEMON_NAME}"
+swift build -c "${BUILD_CONFIGURATION}" --product "${DAEMON_NAME}" \
+    -Xlinker -sectcreate \
+    -Xlinker __TEXT \
+    -Xlinker __info_plist \
+    -Xlinker "${DAEMON_INFO_PLIST}"
 
 rm -rf "${APP_DIR}"
-mkdir -p "${APP_OUTPUT_DIR}"
 mkdir -p "${MACOS_DIR}" "${LAUNCH_DAEMONS_DIR}"
 cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/${APP_NAME}"
-if [[ "${SIGN_IDENTITY}" == "-" ]] \
-    && [[ "${BT_REUSE_INSTALLED_DAEMON:-0}" == "1" ]] \
-    && [[ -x "${INSTALLED_APP_DIR}/Contents/MacOS/${DAEMON_NAME}" ]]; then
-    cp "${INSTALLED_APP_DIR}/Contents/MacOS/${DAEMON_NAME}" "${MACOS_DIR}/${DAEMON_NAME}"
-    echo "Reused installed ad-hoc daemon to preserve the launchd code requirement." >&2
-else
-    cp "${BUILD_DIR}/${DAEMON_NAME}" "${MACOS_DIR}/${DAEMON_NAME}"
-fi
+cp "${BUILD_DIR}/${DAEMON_NAME}" "${MACOS_DIR}/${DAEMON_NAME}"
 
 plutil -create xml1 "${CONTENTS_DIR}/Info.plist"
 plutil -insert CFBundleExecutable -string "${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
@@ -83,7 +104,7 @@ plutil -insert AssociatedBundleIdentifiers -xml "<array><string>${APP_ID}</strin
 plutil -insert EnvironmentVariables -xml "<dict><key>BT_APP_ID</key><string>${APP_ID}</string><key>BT_DAEMON_ID</key><string>${DAEMON_ID}</string><key>BT_DAEMON_CONN</key><string>${DAEMON_CONN}</string><key>BT_CODESIGN_CN</key><string>${CODESIGN_CN}</string></dict>" "${PLIST_PATH}"
 plutil -insert MachServices -xml "<dict><key>${DAEMON_CONN}</key><true/></dict>" "${PLIST_PATH}"
 plutil -insert RunAtLoad -bool YES "${PLIST_PATH}"
-plutil -insert KeepAlive -bool NO "${PLIST_PATH}"
+plutil -insert KeepAlive -xml "<dict><key>SuccessfulExit</key><false/></dict>" "${PLIST_PATH}"
 
 codesign_args=(
     --force
@@ -95,9 +116,7 @@ fi
 
 xattr -cr "${APP_DIR}"
 codesign "${codesign_args[@]}" --identifier "${DAEMON_ID}" "${MACOS_DIR}/${DAEMON_NAME}" >/dev/null
-xattr -cr "${APP_DIR}"
 codesign "${codesign_args[@]}" --identifier "${APP_ID}" "${MACOS_DIR}/${APP_NAME}" >/dev/null
-xattr -cr "${APP_DIR}"
 codesign "${codesign_args[@]}" "${APP_DIR}" >/dev/null
 xattr -d com.apple.FinderInfo "${APP_DIR}" 2>/dev/null || true
 xattr -d 'com.apple.fileprovider.fpfs#P' "${APP_DIR}" 2>/dev/null || true

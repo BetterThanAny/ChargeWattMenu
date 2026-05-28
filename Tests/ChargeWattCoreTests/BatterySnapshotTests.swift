@@ -59,6 +59,15 @@ struct BatterySnapshotTests {
         #expect(abs(snapshot.temperatureCelsius! - 29.25) < 0.05)
     }
 
+    @Test func ignoresImplausibleBatteryTemperature() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "Temperature": 0
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.temperatureCelsius == nil)
+    }
+
     @Test func usesTimeRemainingAsFallbackForChargingEstimate() {
         let snapshot = BatterySnapshot(properties: [
             "BatteryInstalled": true,
@@ -68,6 +77,17 @@ struct BatterySnapshotTests {
         ], date: Date(timeIntervalSince1970: 0))
 
         #expect(snapshot.timeToFullMinutes == 42)
+    }
+
+    @Test func treatsZeroMinuteEstimateAsUnavailable() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "IsCharging": true,
+            "TimeRemaining": 0,
+            "AvgTimeToFull": 0
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.timeToFullMinutes == nil)
     }
 
     @Test func usesAverageTimeToEmptyForDischargeEstimate() {
@@ -108,5 +128,21 @@ struct BatterySnapshotTests {
         #expect(snapshot.stateOfChargePercent == nil)
         #expect(snapshot.timeToFullMinutes == nil)
         #expect(snapshot.batteryHealthPercent == nil)
+    }
+
+    @Test func readsAdapterDetailsFromNSDictionaryWithStringKeys() {
+        let adapter = NSMutableDictionary()
+        adapter["Watts"] = 96
+        adapter["AdapterVoltage"] = 20_000
+        adapter["Current"] = 4_800
+
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "AdapterDetails": adapter
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.adapterWatts == 96)
+        #expect(snapshot.adapterVoltageMillivolts == 20_000)
+        #expect(snapshot.adapterCurrentMilliamps == 4_800)
     }
 }

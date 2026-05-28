@@ -1,6 +1,6 @@
 import Foundation
 
-public struct BatterySnapshot: Equatable {
+public struct BatterySnapshot: Equatable, Sendable {
     public let date: Date
     public let batteryInstalled: Bool
     public let externalConnected: Bool
@@ -143,7 +143,7 @@ public struct BatterySnapshot: Equatable {
         guard let current else {
             return nil
         }
-        guard let max, max > 0, max != 100 else {
+        guard let max, max > 0 else {
             return Int(current.rounded())
         }
         return Int((current / max * 100).rounded())
@@ -153,11 +153,15 @@ public struct BatterySnapshot: Equatable {
         guard let value else {
             return nil
         }
-        return value / 10 - 273.15
+        let celsius = value / 10 - 273.15
+        guard celsius >= -40, celsius <= 125 else {
+            return nil
+        }
+        return celsius
     }
 
     private static func validMinutes(_ value: Int?) -> Int? {
-        guard let value, value >= 0, value < 65_535 else {
+        guard let value, value > 0, value < 65_535 else {
             return nil
         }
         return value
@@ -209,7 +213,15 @@ private enum BatteryProperty {
             return value
         }
         if let value = value as? NSDictionary {
-            return value as? [String: Any]
+            var dictionary: [String: Any] = [:]
+            for (key, entry) in value {
+                if let key = key as? String {
+                    dictionary[key] = entry
+                } else if let key = key as? NSString {
+                    dictionary[key as String] = entry
+                }
+            }
+            return dictionary.isEmpty ? nil : dictionary
         }
         return nil
     }

@@ -3,6 +3,7 @@ public struct ChargeLimitSettings: Equatable, Sendable {
         case minChargeBelowMinimum
         case maxChargeBelowMinimum
         case maxChargeAboveMaximum
+        case minChargeNotBelowMaxCharge
         case minChargeAboveMaxCharge
     }
 
@@ -31,6 +32,10 @@ public struct ChargeLimitSettings: Equatable, Sendable {
 
         if maxCharge > Bounds.maxChargeMaximum {
             throw ValidationError.maxChargeAboveMaximum
+        }
+
+        if minCharge == maxCharge {
+            throw ValidationError.minChargeNotBelowMaxCharge
         }
 
         if minCharge > maxCharge {

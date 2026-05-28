@@ -14,23 +14,27 @@ public struct ChargeControlState: Equatable, Sendable {
     public let isACConnected: Bool?
     public let chargingDisabled: Bool?
     public let maxCharge: Int?
+    public let daemonEnabled: Bool?
 
     public init(
         batteryPercent: Int?,
         isCharging: Bool?,
         isACConnected: Bool?,
         chargingDisabled: Bool?,
-        maxCharge: Int?
+        maxCharge: Int?,
+        daemonEnabled: Bool? = nil
     ) {
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
         self.isACConnected = isACConnected
         self.chargingDisabled = chargingDisabled
         self.maxCharge = maxCharge
+        self.daemonEnabled = daemonEnabled
     }
 }
 
 public enum ChargeLimitApplicationResult: Equatable, Sendable {
+    case updated
     case stoppedCharging
     case chargingToLimit
     case waitingToDropBelowLowerLimit
@@ -101,7 +105,12 @@ public struct ChargeControlClient: Sendable {
     }
 
     public func prepareForAction(approvalTimeout: UInt8 = 6) async throws {
-        switch await actions.startDaemon() {
+        var status = await actions.startDaemon()
+        if status == .notRegistered {
+            status = await actions.repairDaemonRegistration()
+        }
+
+        switch status {
         case .enabled:
             return
         case .requiresApproval:
@@ -116,6 +125,13 @@ public struct ChargeControlClient: Sendable {
     }
 
     public func stop() async {
+        await actions.stop()
+    }
+
+    public func restoreChargingBeforeExit() async {
+        await actions.prepareRequestConnection()
+        try? await actions.enablePowerAdapter()
+        try? await actions.chargeToFull()
         await actions.stop()
     }
 
@@ -139,23 +155,7 @@ public struct ChargeControlClient: Sendable {
     ) async throws -> ChargeLimitApplicationResult {
         await actions.prepareRequestConnection()
         try await actions.setLimits(limits)
-
-        let state = try await actions.currentState()
-        guard let batteryPercent = state.batteryPercent else {
-            return .stateUnavailable
-        }
-
-        if batteryPercent >= limits.maxCharge {
-            try await actions.disableCharging()
-            return .stoppedCharging
-        }
-
-        if batteryPercent < limits.minCharge {
-            try await actions.chargeToLimit()
-            return .chargingToLimit
-        }
-
-        return .waitingToDropBelowLowerLimit
+        return .updated
     }
 
     public func chargeToLimit() async throws {
@@ -301,7 +301,8 @@ private struct BatteryToolkitChargeControlActions: ChargeControlActions {
             isCharging: Self.boolValue(state[BTStateInfo.Keys.isCharging]),
             isACConnected: Self.boolValue(state[BTStateInfo.Keys.isACConnected]),
             chargingDisabled: Self.boolValue(state[BTStateInfo.Keys.chargingDisabled]),
-            maxCharge: Self.intValue(state[BTStateInfo.Keys.maxCharge])
+            maxCharge: Self.intValue(state[BTStateInfo.Keys.maxCharge]),
+            daemonEnabled: Self.boolValue(state[BTStateInfo.Keys.enabled])
         )
     }
 

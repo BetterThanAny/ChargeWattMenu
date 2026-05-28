@@ -41,8 +41,9 @@ swift run ChargeWattMenu
 scripts/package-app.sh
 ```
 
-如果本机没有 Apple Development 或 Developer ID Application 签名身份，打包脚本会生成
-debug + ad-hoc 签名版本。脚本会打印最终 `.app` 路径；默认路径在
+如果本机没有 Apple Development 或 Developer ID Application 签名身份，打包脚本会拒绝
+生成可控制充电的 ad-hoc 版本。仅本机测试时可显式设置
+`BT_ALLOW_ADHOC_CHARGE_CONTROL=1` 生成 debug + ad-hoc 签名版本。脚本会打印最终 `.app` 路径；默认路径在
 `${TMPDIR}/ChargeWattMenu-build/<debug|release>/ChargeWattMenu.app`，也可以用
 `BT_APP_OUTPUT_DIR=/path/to/output scripts/package-app.sh` 指定输出目录。首次使用充电控制时，
 macOS 可能会要求在系统设置里批准后台 daemon。

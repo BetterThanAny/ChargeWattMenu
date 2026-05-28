@@ -33,4 +33,10 @@ struct ChargeLimitSettingsTests {
             try ChargeLimitSettings(minCharge: 81, maxCharge: 80)
         }
     }
+
+    @Test func rejectsEqualLowerAndUpperLimits() {
+        #expect(throws: ChargeLimitSettings.ValidationError.minChargeNotBelowMaxCharge) {
+            try ChargeLimitSettings(minCharge: 80, maxCharge: 80)
+        }
+    }
 }

@@ -11,7 +11,7 @@ public struct PowerFormatter {
             return compactWatts(watts)
         }
         if snapshot.externalConnected, let adapterWatts = snapshot.adapterWatts {
-            return "接电\(adapterWatts)W"
+            return "AC\(adapterWatts)W"
         }
         return "--W"
     }
@@ -87,21 +87,18 @@ public struct PowerFormatter {
         let rawMax = snapshot.rawMaxCapacityMilliampHours.map { Int($0.rounded()) }
         let design = snapshot.designCapacityMilliampHours.map { Int($0.rounded()) }
         if let rawMax, let design {
-            return "\(oneDecimal(health))%（\(rawMax) / \(design) mAh）"
+            return "\(oneDecimal(health))%（\(rawMax) / \(design)）"
         }
         return "\(oneDecimal(health))%"
     }
 
     private func durationText(_ minutes: Int) -> String {
-        if minutes < 60 {
-            return "\(minutes) 分钟"
-        }
-        let hours = minutes / 60
-        let remainingMinutes = minutes % 60
-        if remainingMinutes == 0 {
-            return "\(hours) 小时"
-        }
-        return "\(hours) 小时 \(remainingMinutes) 分钟"
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = minutes < 60 ? [.minute] : [.hour, .minute]
+        formatter.unitsStyle = .full
+        formatter.zeroFormattingBehavior = []
+        formatter.calendar = Calendar(identifier: .gregorian)
+        return formatter.string(from: TimeInterval(minutes * 60)) ?? "\(minutes)分钟"
     }
 
     private func stateText(for snapshot: BatterySnapshot) -> String {
@@ -129,16 +126,19 @@ public struct PowerFormatter {
     }
 
     private func oneDecimal(_ value: Double) -> String {
-        String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), rounded(value, places: 1))
+        decimal(value, places: 1)
     }
 
     private func twoDecimals(_ value: Double) -> String {
-        String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), rounded(value, places: 2))
+        decimal(value, places: 2)
     }
 
-    private func rounded(_ value: Double, places: Int) -> Double {
-        let scale = pow(10.0, Double(places))
-        let epsilon = value >= 0 ? 1e-9 : -1e-9
-        return ((value * scale) + epsilon).rounded() / scale
+    private func decimal(_ value: Double, places: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.minimumFractionDigits = places
+        formatter.maximumFractionDigits = places
+        formatter.roundingMode = .halfUp
+        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 }
