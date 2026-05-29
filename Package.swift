@@ -12,23 +12,9 @@ let package = Package(
             name: "ChargeWattCore",
             targets: ["ChargeWattCore"]
         ),
-        .library(
-            name: "ChargeWattControl",
-            targets: ["ChargeWattControl"]
-        ),
         .executable(
             name: "ChargeWattMenu",
             targets: ["ChargeWattMenu"]
-        ),
-        .executable(
-            name: "ChargeWattMenuDaemon",
-            targets: ["ChargeWattMenuDaemon"]
-        )
-    ],
-    dependencies: [
-        .package(
-            url: "https://github.com/Ailogeneous/Battery-Toolkit-SP",
-            revision: "bce4f8692c5b0af23ba23b69338b720f3614b02d"
         )
     ],
     targets: [
@@ -38,36 +24,18 @@ let package = Package(
                 .linkedFramework("IOKit")
             ]
         ),
-        .target(
-            name: "ChargeWattControl",
-            dependencies: [
-                "ChargeWattCore",
-                .product(name: "BatteryToolkit", package: "Battery-Toolkit-SP")
-            ]
-        ),
         .executableTarget(
             name: "ChargeWattMenu",
             dependencies: [
-                "ChargeWattCore",
-                "ChargeWattControl"
+                "ChargeWattCore"
             ],
             linkerSettings: [
                 .linkedFramework("AppKit")
             ]
         ),
-        .executableTarget(
-            name: "ChargeWattMenuDaemon",
-            dependencies: [
-                .product(name: "BatteryToolkit", package: "Battery-Toolkit-SP")
-            ]
-        ),
         .testTarget(
             name: "ChargeWattCoreTests",
             dependencies: ["ChargeWattCore"]
-        ),
-        .testTarget(
-            name: "ChargeWattControlTests",
-            dependencies: ["ChargeWattControl"]
         )
     ]
 )

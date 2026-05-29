@@ -1,3 +1,0 @@
-import BatteryToolkit
-
-BTDaemon.run()
