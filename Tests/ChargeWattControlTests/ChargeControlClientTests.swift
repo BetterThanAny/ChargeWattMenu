@@ -16,6 +16,17 @@ struct ChargeControlClientTests {
         #expect(actions.approveTimeouts.isEmpty)
     }
 
+    @Test func startDaemonReportsNotRespondingWhenDaemonDoesNotRespond() async {
+        let actions = FakeChargeControlActions(startStatuses: [.enabled])
+        actions.hangStartingDaemon()
+        let client = ChargeControlClient(actions: actions)
+
+        let status = await client.startDaemon(timeoutNanoseconds: 10_000_000)
+
+        #expect(status == .notResponding)
+        #expect(actions.startDaemonCallCount == 1)
+    }
+
     @Test func prepareForActionRepairsUnregisteredDaemonBeforeFailing() async throws {
         let actions = FakeChargeControlActions(
             startStatuses: [.notRegistered, .enabled]
@@ -53,6 +64,19 @@ struct ChargeControlClientTests {
         #expect(actions.approveTimeouts == [7])
     }
 
+    @Test func prepareForActionRejectsUnsignedBuilds() async {
+        let actions = FakeChargeControlActions(startStatuses: [.requiresSignedBuild])
+        let client = ChargeControlClient(actions: actions)
+
+        await #expect(throws: ChargeControlError.daemonRequiresSignedBuild) {
+            try await client.prepareForAction(approvalTimeout: 3)
+        }
+
+        #expect(actions.startDaemonCallCount == 1)
+        #expect(actions.repairDaemonRegistrationCallCount == 0)
+        #expect(actions.approveTimeouts.isEmpty)
+    }
+
     @Test func prepareForActionRejectsUnregisteredDaemonAfterRepairAttempt() async {
         let actions = FakeChargeControlActions(
             startStatuses: [.notRegistered, .notRegistered]
@@ -65,6 +89,39 @@ struct ChargeControlClientTests {
         #expect(actions.startDaemonCallCount == 1)
         #expect(actions.repairDaemonRegistrationCallCount == 1)
         #expect(actions.setLimitsCallCount == 0)
+    }
+
+    @Test func prepareForActionTimesOutWithoutRepairWhenDaemonDoesNotRespond() async {
+        let actions = FakeChargeControlActions(startStatuses: [.enabled])
+        actions.hangStartingDaemon()
+        let client = ChargeControlClient(actions: actions)
+
+        await #expect(throws: ChargeControlError.daemonTimedOut) {
+            try await client.prepareForAction(
+                approvalTimeout: 3,
+                daemonResponseTimeoutNanoseconds: 10_000_000
+            )
+        }
+
+        #expect(actions.startDaemonCallCount == 1)
+        #expect(actions.repairDaemonRegistrationCallCount == 0)
+        #expect(actions.callOrder == ["startDaemon"])
+    }
+
+    @Test func prepareForActionTimesOutWhenUnregisteredDaemonRepairDoesNotRespond() async {
+        let actions = FakeChargeControlActions(startStatuses: [.notRegistered])
+        actions.hangRepairingDaemon()
+        let client = ChargeControlClient(actions: actions)
+
+        await #expect(throws: ChargeControlError.daemonTimedOut) {
+            try await client.prepareForAction(
+                approvalTimeout: 3,
+                daemonResponseTimeoutNanoseconds: 10_000_000
+            )
+        }
+
+        #expect(actions.startDaemonCallCount == 1)
+        #expect(actions.repairDaemonRegistrationCallCount == 1)
     }
 
     @Test func restoreChargingBeforeExitSkipsDaemonConnectionWhenSessionDidNotControlCharging() async {
@@ -319,6 +376,18 @@ struct ChargeControlClientTests {
         #expect(actions.callOrder == ["currentLimits", "stop"])
     }
 
+    @Test func currentLimitsTimesOutAndStopsWhenDaemonDoesNotRespond() async {
+        let actions = FakeChargeControlActions(startStatuses: [.enabled])
+        actions.hangCurrentLimits()
+        let client = ChargeControlClient(actions: actions)
+
+        await #expect(throws: ChargeControlError.daemonTimedOut) {
+            try await client.currentLimits(timeoutNanoseconds: 10_000_000)
+        }
+
+        #expect(actions.callOrder == ["currentLimits", "stop"])
+    }
+
     @Test func currentStateReadsDaemonStateWithoutStartingEventStream() async throws {
         let actions = FakeChargeControlActions(startStatuses: [.enabled])
         let client = ChargeControlClient(actions: actions)
@@ -508,7 +577,10 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
     private let currentState: ChargeControlState
     private let approveError: (any Error)?
     private let currentStateError: (any Error)?
+    private var hangsStartingDaemon: Bool
+    private var hangsRepairingDaemon: Bool
     private var hangsPreparingRequestConnection: Bool
+    private var hangsCurrentLimits: Bool
 
     private(set) var startDaemonCallCount = 0
     private(set) var repairDaemonRegistrationCallCount = 0
@@ -536,29 +608,49 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
         ),
         approveError: (any Error)? = nil,
         currentStateError: (any Error)? = nil,
-        hangsPreparingRequestConnection: Bool = false
+        hangsStartingDaemon: Bool = false,
+        hangsRepairingDaemon: Bool = false,
+        hangsPreparingRequestConnection: Bool = false,
+        hangsCurrentLimits: Bool = false
     ) {
         self.startStatuses = startStatuses
         self.currentState = currentState
         self.approveError = approveError
         self.currentStateError = currentStateError
+        self.hangsStartingDaemon = hangsStartingDaemon
+        self.hangsRepairingDaemon = hangsRepairingDaemon
         self.hangsPreparingRequestConnection = hangsPreparingRequestConnection
+        self.hangsCurrentLimits = hangsCurrentLimits
     }
 
     func startDaemon() async -> ChargeControlClient.DaemonStatus {
-        lock.withLock {
+        let (status, shouldHang) = lock.withLock {
             startDaemonCallCount += 1
             callOrder.append("startDaemon")
-            return startStatuses.isEmpty ? .enabled : startStatuses.removeFirst()
+            return (
+                startStatuses.isEmpty ? .enabled : startStatuses.removeFirst(),
+                hangsStartingDaemon
+            )
         }
+        if shouldHang {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+        }
+        return status
     }
 
     func repairDaemonRegistration() async -> ChargeControlClient.DaemonStatus {
-        lock.withLock {
+        let (status, shouldHang) = lock.withLock {
             repairDaemonRegistrationCallCount += 1
             callOrder.append("repairDaemonRegistration")
-            return startStatuses.isEmpty ? .enabled : startStatuses.removeFirst()
+            return (
+                startStatuses.isEmpty ? .enabled : startStatuses.removeFirst(),
+                hangsRepairingDaemon
+            )
         }
+        if shouldHang {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+        }
+        return status
     }
 
     func prepareRequestConnection() async {
@@ -590,8 +682,12 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
     }
 
     func currentLimits() async throws -> ChargeLimitSettings {
-        lock.withLock {
+        let shouldHang = lock.withLock {
             callOrder.append("currentLimits")
+            return hangsCurrentLimits
+        }
+        if shouldHang {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
         }
         return try ChargeLimitSettings(minCharge: 75, maxCharge: 80)
     }
@@ -663,6 +759,24 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
     func hangPreparingRequestConnection() {
         lock.withLock {
             hangsPreparingRequestConnection = true
+        }
+    }
+
+    func hangStartingDaemon() {
+        lock.withLock {
+            hangsStartingDaemon = true
+        }
+    }
+
+    func hangRepairingDaemon() {
+        lock.withLock {
+            hangsRepairingDaemon = true
+        }
+    }
+
+    func hangCurrentLimits() {
+        lock.withLock {
+            hangsCurrentLimits = true
         }
     }
 

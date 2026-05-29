@@ -298,6 +298,12 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         case .notRegistered:
             chargeControlSupportStatus = .enabled
             setStatusTitle("充电控制：未注册")
+        case .notResponding:
+            chargeControlSupportStatus = .enabled
+            setStatusTitle("充电控制：后台未响应")
+        case .requiresSignedBuild:
+            chargeControlSupportStatus = .enabled
+            setStatusTitle("充电控制：需要签名构建")
         }
         updateChargeControlItemEnablement()
     }
@@ -355,6 +361,10 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
             } catch {
                 await MainActor.run {
                     guard self.chargeControlStatusRefreshGeneration == generation else {
+                        return
+                    }
+                    if error as? ChargeControlError == .daemonRequiresSignedBuild {
+                        self.updateChargeControlStatus(.requiresSignedBuild)
                         return
                     }
                     self.updateChargeControlItemEnablement()
@@ -502,7 +512,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
             return
         }
 
-        runControlAction("移除后台 daemon") { client in
+        runDaemonManagementAction("移除后台 daemon") { client in
             try await client.removeDaemon()
         }
     }
@@ -579,6 +589,45 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
                 await MainActor.run {
                     self.setStatusTitle("充电控制：\(title)已发送")
                     self.refreshChargeControlStatusFromDaemon()
+                    self.scheduleStatusReset()
+                }
+            } catch {
+                await MainActor.run {
+                    self.setStatusTitle("充电控制：\(title)失败")
+                    self.showError(title: "\(title)失败", error: error)
+                    self.scheduleStatusReset()
+                }
+            }
+        }
+        updateChargeControlItemEnablement()
+    }
+
+    private func runDaemonManagementAction(
+        _ title: String,
+        operation: @escaping @Sendable (ChargeControlClient) async throws -> Void
+    ) {
+        guard activeControlActionTask == nil else {
+            setStatusTitle("充电控制：已有操作进行中")
+            scheduleStatusReset()
+            return
+        }
+
+        let client = chargeControl
+        setStatusTitle("充电控制：\(title)中")
+        updateChargeControlItemEnablement()
+
+        activeControlActionTask = Task {
+            defer {
+                Task { @MainActor in
+                    self.activeControlActionTask = nil
+                    self.updateChargeControlItemEnablement()
+                }
+            }
+
+            do {
+                try await operation(client)
+                await MainActor.run {
+                    self.setStatusTitle("充电控制：\(title)已完成")
                     self.scheduleStatusReset()
                 }
             } catch {

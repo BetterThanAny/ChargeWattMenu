@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="ChargeWattMenu"
 DAEMON_NAME="ChargeWattMenuDaemon"
 APP_ID="top.xsdev.ChargeWattMenu"
-DAEMON_ID="${APP_ID}.control-daemon"
+DAEMON_ID="${APP_ID}.daemon"
 DAEMON_CONN="${DAEMON_ID}"
 APP_DISPLAY_NAME="充电功率"
 BUILD_CONFIGURATION="${BT_BUILD_CONFIGURATION:-}"
@@ -30,7 +30,10 @@ if [[ -z "${SIGN_IDENTITY}" || "${SIGN_IDENTITY}" == "-" ]]; then
         exit 2
     fi
     SIGN_IDENTITY="-"
-    BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-debug}"
+    if [[ -n "${BUILD_CONFIGURATION}" && "${BUILD_CONFIGURATION}" != "debug" ]]; then
+        echo "Ad-hoc charge-control builds require debug; using debug instead of ${BUILD_CONFIGURATION}." >&2
+    fi
+    BUILD_CONFIGURATION="debug"
     CODESIGN_CN="${BT_CODESIGN_CN:--}"
     DAEMON_AUTH_REQUIREMENT="identifier \"${APP_ID}\""
     echo "No Apple signing identity found; building a local-only debug app with ad-hoc signing." >&2
@@ -47,6 +50,7 @@ APP_OUTPUT_DIR="${BT_APP_OUTPUT_DIR:-${DEFAULT_OUTPUT_DIR}}"
 APP_DIR="${APP_OUTPUT_DIR}/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
+LAUNCH_SERVICES_DIR="${CONTENTS_DIR}/Library/LaunchServices"
 LAUNCH_DAEMONS_DIR="${CONTENTS_DIR}/Library/LaunchDaemons"
 DAEMON_INFO_PLIST="${APP_OUTPUT_DIR}/${DAEMON_NAME}-Info.plist"
 
@@ -69,6 +73,7 @@ plutil -insert SMAssociatedBundleIdentifiers -array "${DAEMON_INFO_PLIST}"
 plutil -insert SMAssociatedBundleIdentifiers.0 -string "${APP_ID}" "${DAEMON_INFO_PLIST}"
 
 swift build -c "${BUILD_CONFIGURATION}" --product "${APP_NAME}"
+rm -f "${BUILD_DIR}/${DAEMON_NAME}"
 swift build -c "${BUILD_CONFIGURATION}" --product "${DAEMON_NAME}" \
     -Xlinker -sectcreate \
     -Xlinker __TEXT \
@@ -76,9 +81,9 @@ swift build -c "${BUILD_CONFIGURATION}" --product "${DAEMON_NAME}" \
     -Xlinker "${DAEMON_INFO_PLIST}"
 
 rm -rf "${APP_DIR}"
-mkdir -p "${MACOS_DIR}" "${LAUNCH_DAEMONS_DIR}"
+mkdir -p "${MACOS_DIR}" "${LAUNCH_SERVICES_DIR}" "${LAUNCH_DAEMONS_DIR}"
 cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/${APP_NAME}"
-cp "${BUILD_DIR}/${DAEMON_NAME}" "${MACOS_DIR}/${DAEMON_NAME}"
+cp "${BUILD_DIR}/${DAEMON_NAME}" "${LAUNCH_SERVICES_DIR}/${DAEMON_NAME}"
 
 plutil -create xml1 "${CONTENTS_DIR}/Info.plist"
 plutil -insert CFBundleExecutable -string "${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
@@ -86,8 +91,8 @@ plutil -insert CFBundleIdentifier -string "${APP_ID}" "${CONTENTS_DIR}/Info.plis
 plutil -insert CFBundleName -string "${APP_NAME}" "${CONTENTS_DIR}/Info.plist"
 plutil -insert CFBundleDisplayName -string "${APP_DISPLAY_NAME}" "${CONTENTS_DIR}/Info.plist"
 plutil -insert CFBundlePackageType -string APPL "${CONTENTS_DIR}/Info.plist"
-plutil -insert CFBundleShortVersionString -string 0.2.1 "${CONTENTS_DIR}/Info.plist"
-plutil -insert CFBundleVersion -string 4 "${CONTENTS_DIR}/Info.plist"
+plutil -insert CFBundleShortVersionString -string 0.2.2 "${CONTENTS_DIR}/Info.plist"
+plutil -insert CFBundleVersion -string 5 "${CONTENTS_DIR}/Info.plist"
 plutil -insert LSMinimumSystemVersion -string 13.0 "${CONTENTS_DIR}/Info.plist"
 plutil -insert LSUIElement -bool YES "${CONTENTS_DIR}/Info.plist"
 plutil -insert NSHighResolutionCapable -bool YES "${CONTENTS_DIR}/Info.plist"
@@ -99,7 +104,7 @@ plutil -insert BT_CODESIGN_CN -string "${CODESIGN_CN}" "${CONTENTS_DIR}/Info.pli
 PLIST_PATH="${LAUNCH_DAEMONS_DIR}/${DAEMON_ID}.plist"
 plutil -create xml1 "${PLIST_PATH}"
 plutil -insert Label -string "${DAEMON_ID}" "${PLIST_PATH}"
-plutil -insert BundleProgram -string "Contents/MacOS/${DAEMON_NAME}" "${PLIST_PATH}"
+plutil -insert BundleProgram -string "Contents/Library/LaunchServices/${DAEMON_NAME}" "${PLIST_PATH}"
 plutil -insert AssociatedBundleIdentifiers -xml "<array><string>${APP_ID}</string></array>" "${PLIST_PATH}"
 plutil -insert EnvironmentVariables -xml "<dict><key>BT_APP_ID</key><string>${APP_ID}</string><key>BT_DAEMON_ID</key><string>${DAEMON_ID}</string><key>BT_DAEMON_CONN</key><string>${DAEMON_CONN}</string><key>BT_CODESIGN_CN</key><string>${CODESIGN_CN}</string></dict>" "${PLIST_PATH}"
 plutil -insert MachServices -xml "<dict><key>${DAEMON_CONN}</key><true/></dict>" "${PLIST_PATH}"
@@ -115,7 +120,7 @@ if [[ "${SIGN_IDENTITY}" != "-" ]]; then
 fi
 
 xattr -cr "${APP_DIR}"
-codesign "${codesign_args[@]}" --identifier "${DAEMON_ID}" "${MACOS_DIR}/${DAEMON_NAME}" >/dev/null
+codesign "${codesign_args[@]}" --identifier "${DAEMON_ID}" "${LAUNCH_SERVICES_DIR}/${DAEMON_NAME}" >/dev/null
 codesign "${codesign_args[@]}" --identifier "${APP_ID}" "${MACOS_DIR}/${APP_NAME}" >/dev/null
 codesign "${codesign_args[@]}" "${APP_DIR}" >/dev/null
 xattr -d com.apple.FinderInfo "${APP_DIR}" 2>/dev/null || true
