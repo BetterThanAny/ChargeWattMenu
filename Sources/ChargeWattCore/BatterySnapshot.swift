@@ -31,8 +31,8 @@ public struct BatterySnapshot: Equatable, Sendable {
 
         if batteryInstalled {
             self.voltageMillivolts = BatteryProperty.double(properties["Voltage"])
-            self.currentMilliamps = BatteryProperty.double(properties["InstantAmperage"])
-                ?? BatteryProperty.double(properties["Amperage"])
+            self.currentMilliamps = BatteryProperty.signedDouble(properties["InstantAmperage"])
+                ?? BatteryProperty.signedDouble(properties["Amperage"])
             self.stateOfChargePercent = BatterySnapshot.percent(
                 current: BatteryProperty.double(properties["CurrentCapacity"]),
                 max: BatteryProperty.double(properties["MaxCapacity"])
@@ -144,6 +144,9 @@ public struct BatterySnapshot: Equatable, Sendable {
             return nil
         }
         guard let max, max > 0 else {
+            guard current >= 0, current <= 100 else {
+                return nil
+            }
             return Int(current.rounded())
         }
         return Int((current / max * 100).rounded())
@@ -206,6 +209,17 @@ private enum BatteryProperty {
             return Double(value)
         }
         return nil
+    }
+
+    static func signedDouble(_ value: Any?) -> Double? {
+        if let value = value as? NSNumber {
+            let type = String(cString: value.objCType)
+            if ["C", "S", "I", "L", "Q"].contains(type),
+               value.uint64Value > UInt64(Int64.max) {
+                return Double(Int64(bitPattern: value.uint64Value))
+            }
+        }
+        return double(value)
     }
 
     static func dictionary(_ value: Any?) -> [String: Any]? {

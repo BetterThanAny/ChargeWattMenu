@@ -55,6 +55,8 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private var timer: Timer?
     private var snapshot = BatterySnapshot.unavailable()
     private var refreshTask: Task<Void, Never>?
+    private var chargeControlStatusRefreshTask: Task<Void, Never>?
+    private var chargeControlStatusRefreshGeneration = 0
     private var chargeControlStartTask: Task<Void, Never>?
     private var activeControlActionTask: Task<Void, Never>?
     private var statusResetTask: Task<Void, Never>?
@@ -79,6 +81,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         timer?.invalidate()
         refreshTask?.cancel()
+        chargeControlStatusRefreshTask?.cancel()
 
         guard terminationTask == nil else {
             return .terminateLater
@@ -97,6 +100,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         refreshTask?.cancel()
+        chargeControlStatusRefreshTask?.cancel()
         statusResetTask?.cancel()
         activeControlActionTask?.cancel()
     }
@@ -255,7 +259,6 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
 
             let status = await client.startDaemon()
             await MainActor.run {
-                self.chargeControlStartTask = nil
                 self.updateChargeControlStatus(status)
             }
         }
@@ -277,26 +280,49 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     }
 
     private func updateChargeControlStatus(_ state: ChargeControlState) {
-        if state.daemonEnabled == false {
-            chargeControlsAreSupported = false
-            setStatusTitle("充电控制：当前机型不支持")
-        } else {
+        switch state.supportStatus {
+        case .enabled:
             chargeControlsAreSupported = true
             setStatusTitle("充电控制：已启用")
+        case .unsupported:
+            chargeControlsAreSupported = false
+            setStatusTitle("充电控制：当前机型不支持")
+        case .unknown:
+            chargeControlsAreSupported = false
+            setStatusTitle("充电控制：状态不可用")
         }
         updateChargeControlItemEnablement()
     }
 
     private func refreshChargeControlStatusFromDaemon() {
         let client = chargeControl
-        Task {
+        chargeControlStatusRefreshTask?.cancel()
+        chargeControlStatusRefreshGeneration += 1
+        let generation = chargeControlStatusRefreshGeneration
+        chargeControlStatusRefreshTask = Task {
+            defer {
+                Task { @MainActor in
+                    if self.chargeControlStatusRefreshGeneration == generation {
+                        self.chargeControlStatusRefreshTask = nil
+                    }
+                }
+            }
             do {
                 let state = try await client.currentState()
+                guard !Task.isCancelled else {
+                    return
+                }
                 await MainActor.run {
+                    guard self.chargeControlStatusRefreshGeneration == generation else {
+                        return
+                    }
                     self.updateChargeControlStatus(state)
                 }
             } catch {
                 await MainActor.run {
+                    guard self.chargeControlStatusRefreshGeneration == generation else {
+                        return
+                    }
                     self.updateChargeControlItemEnablement()
                 }
             }
@@ -376,9 +402,9 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
                 await MainActor.run {
                     self.setStatusTitle("充电控制：设置充电范围中")
                 }
-                try await client.setLimits(limits)
+                let result = try await client.setLimitsAndApply(limits)
                 await MainActor.run {
-                    self.setStatusTitle("充电控制：范围已保存")
+                    self.setStatusTitle("充电控制：\(self.statusText(for: result))")
                     self.scheduleStatusReset()
                 }
             } catch {
@@ -560,21 +586,10 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
             return nil
         }
 
-        guard
-            let minCharge = Int(minField.stringValue),
-            let maxCharge = Int(maxField.stringValue)
-        else {
-            showMessage(
-                title: "充电范围无效",
-                message: "请输入整数百分比。"
-            )
-            return nil
-        }
-
         do {
-            return try ChargeLimitSettings(
-                minCharge: minCharge,
-                maxCharge: maxCharge
+            return try ChargeLimitSettings.parse(
+                minText: minField.stringValue,
+                maxText: maxField.stringValue
             )
         } catch {
             showMessage(
@@ -592,6 +607,9 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     }
 
     private func validationMessage(for error: Error) -> String {
+        if error as? ChargeLimitSettings.ParseError == .notInteger {
+            return "请输入整数百分比。"
+        }
         guard let error = error as? ChargeLimitSettings.ValidationError else {
             return error.localizedDescription
         }
@@ -607,6 +625,21 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
             return "恢复充电下限必须低于停止充电上限。"
         case .minChargeAboveMaxCharge:
             return "恢复充电下限不能高于停止充电上限。"
+        }
+    }
+
+    private func statusText(for result: ChargeLimitApplicationResult) -> String {
+        switch result {
+        case .updated:
+            return "范围已保存"
+        case .stoppedCharging:
+            return "范围已保存，已停止充电"
+        case .chargingToLimit:
+            return "范围已保存，正在充到上限"
+        case .waitingToDropBelowLowerLimit:
+            return "范围已保存，等待低于下限"
+        case .stateUnavailable:
+            return "范围已保存，状态不可用"
         }
     }
 

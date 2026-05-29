@@ -50,6 +50,28 @@ struct BatterySnapshotTests {
         #expect(abs(snapshot.batteryPowerWatts! - -13.8) < 0.05)
     }
 
+    @Test func convertsUnsignedCurrentOverflowToSignedMilliamps() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "ExternalConnected": false,
+            "IsCharging": false,
+            "Voltage": 11_500,
+            "InstantAmperage": NSNumber(value: UInt64.max - 1_199)
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.currentMilliamps == -1_200)
+        #expect(abs(snapshot.batteryPowerWatts! - -13.8) < 0.05)
+    }
+
+    @Test func doesNotTreatRawCapacityAsPercentWhenMaxCapacityIsMissing() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "CurrentCapacity": 4_626
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.stateOfChargePercent == nil)
+    }
+
     @Test func convertsBatteryTemperatureFromDeciKelvinToCelsius() {
         let snapshot = BatterySnapshot(properties: [
             "BatteryInstalled": true,

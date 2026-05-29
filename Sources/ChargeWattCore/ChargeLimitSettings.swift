@@ -1,4 +1,10 @@
+import Foundation
+
 public struct ChargeLimitSettings: Equatable, Sendable {
+    public enum ParseError: Error, Equatable {
+        case notInteger
+    }
+
     public enum ValidationError: Error, Equatable {
         case minChargeBelowMinimum
         case maxChargeBelowMinimum
@@ -44,5 +50,18 @@ public struct ChargeLimitSettings: Equatable, Sendable {
 
         self.minCharge = minCharge
         self.maxCharge = maxCharge
+    }
+
+    public static func parse(minText: String, maxText: String) throws -> ChargeLimitSettings {
+        let minText = minText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let maxText = maxText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let minCharge = Int(minText),
+            let maxCharge = Int(maxText)
+        else {
+            throw ParseError.notInteger
+        }
+
+        return try ChargeLimitSettings(minCharge: minCharge, maxCharge: maxCharge)
     }
 }

@@ -68,36 +68,98 @@ struct ChargeControlClientTests {
     }
 
     @Test func restoreChargingBeforeExitFailsOpenBeforeDisconnecting() async {
-        let actions = FakeChargeControlActions(startStatuses: [.enabled])
+        let actions = FakeChargeControlActions(
+            startStatuses: [.enabled],
+            currentState: ChargeControlState(
+                batteryPercent: 79,
+                isCharging: false,
+                isACConnected: true,
+                chargingDisabled: true,
+                maxCharge: 80,
+                daemonEnabled: true
+            )
+        )
         let client = ChargeControlClient(actions: actions)
 
-        await client.restoreChargingBeforeExit()
+        let completed = await client.restoreChargingBeforeExit()
 
+        #expect(completed)
         #expect(actions.prepareRequestConnectionCallCount == 1)
+        #expect(actions.currentStateCallCount == 1)
         #expect(actions.enablePowerAdapterCallCount == 1)
-        #expect(actions.chargeToFullCallCount == 1)
+        #expect(actions.chargeToLimitCallCount == 1)
+        #expect(actions.chargeToFullCallCount == 0)
         #expect(actions.stopCallCount == 1)
         #expect(
             actions.callOrder == [
                 "prepareRequestConnection",
+                "currentState",
                 "enablePowerAdapter",
-                "chargeToFull",
+                "chargeToLimit",
                 "stop"
             ]
         )
     }
 
-    @Test func currentLimitsPreparesRequestConnectionBeforeReadingSettings() async throws {
+    @Test func restoreChargingBeforeExitSkipsChargingChangesWhenDaemonIsDisabled() async {
+        let actions = FakeChargeControlActions(
+            startStatuses: [.enabled],
+            currentState: ChargeControlState(
+                batteryPercent: 79,
+                isCharging: false,
+                isACConnected: true,
+                chargingDisabled: true,
+                maxCharge: 80,
+                daemonEnabled: false
+            )
+        )
+        let client = ChargeControlClient(actions: actions)
+
+        let completed = await client.restoreChargingBeforeExit()
+
+        #expect(completed)
+        #expect(actions.enablePowerAdapterCallCount == 0)
+        #expect(actions.chargeToLimitCallCount == 0)
+        #expect(actions.chargeToFullCallCount == 0)
+        #expect(actions.stopCallCount == 1)
+    }
+
+    @Test func restoreChargingBeforeExitTimesOutWhenDaemonDoesNotRespond() async {
+        let actions = FakeChargeControlActions(
+            startStatuses: [.enabled],
+            hangsPreparingRequestConnection: true
+        )
+        let client = ChargeControlClient(actions: actions)
+
+        let completed = await client.restoreChargingBeforeExit(
+            timeoutNanoseconds: 10_000_000
+        )
+
+        #expect(completed == false)
+        #expect(actions.prepareRequestConnectionCallCount == 1)
+    }
+
+    @Test func currentLimitsReadsSettingsWithoutStartingEventStream() async throws {
         let actions = FakeChargeControlActions(startStatuses: [.enabled])
         let client = ChargeControlClient(actions: actions)
 
         _ = try await client.currentLimits()
 
-        #expect(actions.prepareRequestConnectionCallCount == 1)
-        #expect(actions.callOrder == ["prepareRequestConnection", "currentLimits"])
+        #expect(actions.prepareRequestConnectionCallCount == 0)
+        #expect(actions.callOrder == ["currentLimits"])
     }
 
-    @Test func setLimitsAndApplyOnlyPersistsLimits() async throws {
+    @Test func currentStateReadsDaemonStateWithoutStartingEventStream() async throws {
+        let actions = FakeChargeControlActions(startStatuses: [.enabled])
+        let client = ChargeControlClient(actions: actions)
+
+        _ = try await client.currentState()
+
+        #expect(actions.prepareRequestConnectionCallCount == 0)
+        #expect(actions.callOrder == ["currentState"])
+    }
+
+    @Test func setLimitsAndApplyStopsChargingAtOrAboveUpperLimit() async throws {
         let actions = FakeChargeControlActions(
             startStatuses: [.enabled],
             currentState: ChargeControlState(
@@ -114,15 +176,16 @@ struct ChargeControlClientTests {
             try ChargeLimitSettings(minCharge: 75, maxCharge: 80)
         )
 
-        #expect(result == .updated)
-        #expect(actions.prepareRequestConnectionCallCount == 1)
+        #expect(result == .stoppedCharging)
+        #expect(actions.prepareRequestConnectionCallCount == 0)
         #expect(actions.setLimitsCallCount == 1)
-        #expect(actions.disableChargingCallCount == 0)
+        #expect(actions.currentStateCallCount == 1)
+        #expect(actions.disableChargingCallCount == 1)
         #expect(actions.chargeToLimitCallCount == 0)
-        #expect(actions.callOrder == ["prepareRequestConnection", "setLimits"])
+        #expect(actions.callOrder == ["setLimits", "currentState", "disableCharging"])
     }
 
-    @Test func setLimitsDoesNotChargeWhenBatteryIsBelowLowerLimit() async throws {
+    @Test func setLimitsAndApplyChargesToLimitBelowLowerLimit() async throws {
         let actions = FakeChargeControlActions(
             startStatuses: [.enabled],
             currentState: ChargeControlState(
@@ -139,16 +202,87 @@ struct ChargeControlClientTests {
             try ChargeLimitSettings(minCharge: 75, maxCharge: 80)
         )
 
-        #expect(result == .updated)
+        #expect(result == .chargingToLimit)
+        #expect(actions.setLimitsCallCount == 1)
+        #expect(actions.disableChargingCallCount == 0)
+        #expect(actions.chargeToLimitCallCount == 1)
+        #expect(actions.disablePowerAdapterCallCount == 0)
+    }
+
+    @Test func setLimitsAndApplyWaitsWhenBatteryIsBetweenLimitsAndChargingIsDisabled() async throws {
+        let actions = FakeChargeControlActions(
+            startStatuses: [.enabled],
+            currentState: ChargeControlState(
+                batteryPercent: 78,
+                isCharging: false,
+                isACConnected: true,
+                chargingDisabled: true,
+                maxCharge: 80
+            )
+        )
+        let client = ChargeControlClient(actions: actions)
+
+        let result = try await client.setLimitsAndApply(
+            try ChargeLimitSettings(minCharge: 75, maxCharge: 80)
+        )
+
+        #expect(result == .waitingToDropBelowLowerLimit)
+        #expect(actions.disableChargingCallCount == 0)
+        #expect(actions.chargeToLimitCallCount == 0)
+    }
+
+    @Test func setLimitsAndApplyReportsUnavailableState() async throws {
+        let actions = FakeChargeControlActions(
+            startStatuses: [.enabled],
+            currentStateError: FakeChargeControlError.stateUnavailable
+        )
+        let client = ChargeControlClient(actions: actions)
+
+        let result = try await client.setLimitsAndApply(
+            try ChargeLimitSettings(minCharge: 75, maxCharge: 80)
+        )
+
+        #expect(result == .stateUnavailable)
         #expect(actions.setLimitsCallCount == 1)
         #expect(actions.disableChargingCallCount == 0)
         #expect(actions.chargeToLimitCallCount == 0)
-        #expect(actions.disablePowerAdapterCallCount == 0)
+    }
+
+    @Test func chargeControlStateRequiresExplicitDaemonEnabledFlag() {
+        let unknown = ChargeControlState(
+            batteryPercent: nil,
+            isCharging: nil,
+            isACConnected: nil,
+            chargingDisabled: nil,
+            maxCharge: nil,
+            daemonEnabled: nil
+        )
+        let disabled = ChargeControlState(
+            batteryPercent: nil,
+            isCharging: nil,
+            isACConnected: nil,
+            chargingDisabled: nil,
+            maxCharge: nil,
+            daemonEnabled: false
+        )
+        let enabled = ChargeControlState(
+            batteryPercent: nil,
+            isCharging: nil,
+            isACConnected: nil,
+            chargingDisabled: nil,
+            maxCharge: nil,
+            daemonEnabled: true
+        )
+
+        #expect(unknown.supportStatus == .unknown)
+        #expect(disabled.supportStatus == .unsupported)
+        #expect(enabled.supportStatus == .enabled)
     }
 }
 
 private enum FakeChargeControlError: Error {
     case approvalFailed
+    case stateUnavailable
 }
 
 private final class FakeChargeControlActions: ChargeControlActions, @unchecked Sendable {
@@ -156,10 +290,13 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
     private var startStatuses: [ChargeControlClient.DaemonStatus]
     private let currentState: ChargeControlState
     private let approveError: (any Error)?
+    private let currentStateError: (any Error)?
+    private let hangsPreparingRequestConnection: Bool
 
     private(set) var startDaemonCallCount = 0
     private(set) var repairDaemonRegistrationCallCount = 0
     private(set) var prepareRequestConnectionCallCount = 0
+    private(set) var currentStateCallCount = 0
     private(set) var approveTimeouts: [UInt8] = []
     private(set) var setLimitsCallCount = 0
     private(set) var stopCallCount = 0
@@ -179,11 +316,15 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
             chargingDisabled: nil,
             maxCharge: nil
         ),
-        approveError: (any Error)? = nil
+        approveError: (any Error)? = nil,
+        currentStateError: (any Error)? = nil,
+        hangsPreparingRequestConnection: Bool = false
     ) {
         self.startStatuses = startStatuses
         self.currentState = currentState
         self.approveError = approveError
+        self.currentStateError = currentStateError
+        self.hangsPreparingRequestConnection = hangsPreparingRequestConnection
     }
 
     func startDaemon() async -> ChargeControlClient.DaemonStatus {
@@ -206,6 +347,9 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
         lock.withLock {
             prepareRequestConnectionCallCount += 1
             callOrder.append("prepareRequestConnection")
+        }
+        if hangsPreparingRequestConnection {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
         }
     }
 
@@ -235,7 +379,11 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
 
     func currentState() async throws -> ChargeControlState {
         lock.withLock {
+            currentStateCallCount += 1
             callOrder.append("currentState")
+        }
+        if let currentStateError {
+            throw currentStateError
         }
         return currentState
     }

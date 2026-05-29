@@ -9,6 +9,12 @@ public enum ChargeControlError: Error, Equatable {
 }
 
 public struct ChargeControlState: Equatable, Sendable {
+    public enum SupportStatus: Equatable, Sendable {
+        case enabled
+        case unsupported
+        case unknown
+    }
+
     public let batteryPercent: Int?
     public let isCharging: Bool?
     public let isACConnected: Bool?
@@ -30,6 +36,17 @@ public struct ChargeControlState: Equatable, Sendable {
         self.chargingDisabled = chargingDisabled
         self.maxCharge = maxCharge
         self.daemonEnabled = daemonEnabled
+    }
+
+    public var supportStatus: SupportStatus {
+        switch daemonEnabled {
+        case .some(true):
+            return .enabled
+        case .some(false):
+            return .unsupported
+        case .none:
+            return .unknown
+        }
     }
 }
 
@@ -128,33 +145,59 @@ public struct ChargeControlClient: Sendable {
         await actions.stop()
     }
 
-    public func restoreChargingBeforeExit() async {
-        await actions.prepareRequestConnection()
-        try? await actions.enablePowerAdapter()
-        try? await actions.chargeToFull()
-        await actions.stop()
+    @discardableResult
+    public func restoreChargingBeforeExit(
+        timeoutNanoseconds: UInt64 = 3_000_000_000
+    ) async -> Bool {
+        await Self.runWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
+            await actions.prepareRequestConnection()
+            guard let state = try? await actions.currentState(),
+                  state.daemonEnabled == true else {
+                await actions.stop()
+                return
+            }
+
+            try? await actions.enablePowerAdapter()
+            try? await actions.chargeToLimit()
+            await actions.stop()
+        }
     }
 
     public func currentLimits() async throws -> ChargeLimitSettings {
-        await actions.prepareRequestConnection()
         return try await actions.currentLimits()
     }
 
     public func currentState() async throws -> ChargeControlState {
-        await actions.prepareRequestConnection()
         return try await actions.currentState()
     }
 
     public func setLimits(_ limits: ChargeLimitSettings) async throws {
-        await actions.prepareRequestConnection()
         try await actions.setLimits(limits)
     }
 
     public func setLimitsAndApply(
         _ limits: ChargeLimitSettings
     ) async throws -> ChargeLimitApplicationResult {
-        await actions.prepareRequestConnection()
         try await actions.setLimits(limits)
+        guard let state = try? await actions.currentState(),
+              let batteryPercent = state.batteryPercent else {
+            return .stateUnavailable
+        }
+
+        if batteryPercent >= limits.maxCharge {
+            try await actions.disableCharging()
+            return .stoppedCharging
+        }
+
+        if batteryPercent < limits.minCharge {
+            try await actions.chargeToLimit()
+            return .chargingToLimit
+        }
+
+        if state.chargingDisabled == true {
+            return .waitingToDropBelowLowerLimit
+        }
+
         return .updated
     }
 
@@ -195,6 +238,57 @@ public struct ChargeControlClient: Sendable {
 
     public func removeDaemon() async throws {
         try await actions.removeDaemon()
+    }
+
+    private static func runWithTimeout(
+        timeoutNanoseconds: UInt64,
+        operation: @escaping @Sendable () async -> Void
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let gate = OneShotContinuation(continuation)
+            let operationTask = Task {
+                await operation()
+                gate.resume(returning: true)
+            }
+
+            Task {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                if gate.resume(returning: false) {
+                    operationTask.cancel()
+                }
+            }
+        }
+    }
+}
+
+private final class OneShotContinuation<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Never>?
+
+    init(_ continuation: CheckedContinuation<Value, Never>) {
+        self.continuation = continuation
+    }
+
+    @discardableResult
+    func resume(returning value: Value) -> Bool {
+        let continuation = lock.withLock {
+            let continuation = self.continuation
+            self.continuation = nil
+            return continuation
+        }
+        guard let continuation else {
+            return false
+        }
+        continuation.resume(returning: value)
+        return true
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
 

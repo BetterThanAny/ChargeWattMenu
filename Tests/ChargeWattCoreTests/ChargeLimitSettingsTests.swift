@@ -10,6 +10,21 @@ struct ChargeLimitSettingsTests {
         #expect(settings.maxCharge == 80)
     }
 
+    @Test func parsesWhitespacePaddedPercentages() throws {
+        let settings = try ChargeLimitSettings.parse(
+            minText: " 75",
+            maxText: "80 "
+        )
+
+        #expect(settings == ChargeLimitSettings.defaults)
+    }
+
+    @Test func rejectsNonIntegerText() {
+        #expect(throws: ChargeLimitSettings.ParseError.notInteger) {
+            try ChargeLimitSettings.parse(minText: "75.5", maxText: "80")
+        }
+    }
+
     @Test func rejectsLowerLimitBelowBatteryToolkitMinimum() {
         #expect(throws: ChargeLimitSettings.ValidationError.minChargeBelowMinimum) {
             try ChargeLimitSettings(minCharge: 19, maxCharge: 80)
