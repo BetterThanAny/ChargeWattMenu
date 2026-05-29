@@ -8,10 +8,16 @@ public enum ChargeControlMenuVisibility {
     }
 
     public static func shouldStartDaemonOnApplicationLaunch() -> Bool {
-        true
+        false
     }
 
     public static func shouldStartDaemonWhenShowingAdvancedControls(
+        showsAdvancedControls: Bool
+    ) -> Bool {
+        showsAdvancedControls
+    }
+
+    public static func shouldRefreshDaemonStatusWhenMenuOpens(
         showsAdvancedControls: Bool
     ) -> Bool {
         showsAdvancedControls

@@ -93,12 +93,15 @@ public struct PowerFormatter {
     }
 
     private func durationText(_ minutes: Int) -> String {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = minutes < 60 ? [.minute] : [.hour, .minute]
-        formatter.unitsStyle = .full
-        formatter.zeroFormattingBehavior = []
-        formatter.calendar = Calendar(identifier: .gregorian)
-        return formatter.string(from: TimeInterval(minutes * 60)) ?? "\(minutes)分钟"
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        guard hours > 0 else {
+            return "\(minutes)分钟"
+        }
+        guard remainingMinutes > 0 else {
+            return "\(hours)小时"
+        }
+        return "\(hours)小时\(remainingMinutes)分钟"
     }
 
     private func stateText(for snapshot: BatterySnapshot) -> String {

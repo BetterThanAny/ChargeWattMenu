@@ -62,7 +62,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private var statusResetTask: Task<Void, Never>?
     private var terminationTask: Task<Void, Never>?
     private var isShowingLimitsAlert = false
-    private var chargeControlsAreSupported = true
+    private var chargeControlSupportStatus = ChargeControlState.SupportStatus.enabled
 
     private var showsChargeControls: Bool {
         UserDefaults.standard.bool(forKey: PreferenceKey.showChargeControls)
@@ -73,7 +73,10 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         configureMenu()
         refresh()
         startTimer()
-        if ChargeControlMenuVisibility.shouldStartDaemonOnApplicationLaunch() {
+        if ChargeControlMenuVisibility.shouldStartDaemonOnApplicationLaunch()
+            || ChargeControlMenuVisibility.shouldStartDaemonWhenShowingAdvancedControls(
+                showsAdvancedControls: showsChargeControls
+            ) {
             startChargeControl()
         }
     }
@@ -88,9 +91,13 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         }
 
         let client = chargeControl
+        let activeActionTask = activeControlActionTask
         terminationTask = Task {
-            await client.restoreChargingBeforeExit()
+            await ChargeControlTermination.waitForActiveActionBeforeRestore(activeActionTask) {
+                await client.restoreChargingBeforeExit()
+            }
             await MainActor.run {
+                self.terminationTask = nil
                 NSApp.reply(toApplicationShouldTerminate: true)
             }
         }
@@ -101,6 +108,7 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
         timer?.invalidate()
         refreshTask?.cancel()
         chargeControlStatusRefreshTask?.cancel()
+        chargeControlStartTask?.cancel()
         statusResetTask?.cancel()
         activeControlActionTask?.cancel()
     }
@@ -226,7 +234,22 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private func updateChargeControlItemEnablement() {
         for item in coreChargeControlItems + advancedChargeControlItems
         where item.action != nil {
-            item.isEnabled = chargeControlsAreSupported && activeControlActionTask == nil
+            item.isEnabled = isChargeControlActionEnabled(item)
+        }
+    }
+
+    private func isChargeControlActionEnabled(_ item: NSMenuItem) -> Bool {
+        guard activeControlActionTask == nil else {
+            return false
+        }
+        switch chargeControlSupportStatus {
+        case .enabled:
+            return true
+        case .paused:
+            return item.action == #selector(resumeBackgroundControl)
+                || item.action == #selector(removeBackgroundDaemon)
+        case .unsupported, .unknown:
+            return false
         }
     }
 
@@ -267,13 +290,13 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private func updateChargeControlStatus(_ status: ChargeControlClient.DaemonStatus) {
         switch status {
         case .enabled:
-            chargeControlsAreSupported = true
+            chargeControlSupportStatus = .enabled
             setStatusTitle("充电控制：已启用")
         case .requiresApproval:
-            chargeControlsAreSupported = true
+            chargeControlSupportStatus = .enabled
             setStatusTitle("充电控制：需要批准")
         case .notRegistered:
-            chargeControlsAreSupported = true
+            chargeControlSupportStatus = .enabled
             setStatusTitle("充电控制：未注册")
         }
         updateChargeControlItemEnablement()
@@ -282,19 +305,30 @@ final class ChargeWattMenuDelegate: NSObject, NSApplicationDelegate, NSMenuDeleg
     private func updateChargeControlStatus(_ state: ChargeControlState) {
         switch state.supportStatus {
         case .enabled:
-            chargeControlsAreSupported = true
+            chargeControlSupportStatus = .enabled
             setStatusTitle("充电控制：已启用")
+        case .paused:
+            chargeControlSupportStatus = .paused
+            setStatusTitle("充电控制：已暂停")
         case .unsupported:
-            chargeControlsAreSupported = false
+            chargeControlSupportStatus = .unsupported
             setStatusTitle("充电控制：当前机型不支持")
         case .unknown:
-            chargeControlsAreSupported = false
+            chargeControlSupportStatus = .unknown
             setStatusTitle("充电控制：状态不可用")
         }
         updateChargeControlItemEnablement()
     }
 
     private func refreshChargeControlStatusFromDaemon() {
+        guard ChargeControlMenuVisibility.shouldRefreshDaemonStatusWhenMenuOpens(
+            showsAdvancedControls: showsChargeControls
+        ) else {
+            chargeControlStatusRefreshTask?.cancel()
+            chargeControlStatusRefreshTask = nil
+            return
+        }
+
         let client = chargeControl
         chargeControlStatusRefreshTask?.cancel()
         chargeControlStatusRefreshGeneration += 1

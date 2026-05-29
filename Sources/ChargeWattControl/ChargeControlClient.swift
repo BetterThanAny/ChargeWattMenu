@@ -11,6 +11,7 @@ public enum ChargeControlError: Error, Equatable {
 public struct ChargeControlState: Equatable, Sendable {
     public enum SupportStatus: Equatable, Sendable {
         case enabled
+        case paused
         case unsupported
         case unknown
     }
@@ -43,7 +44,7 @@ public struct ChargeControlState: Equatable, Sendable {
         case .some(true):
             return .enabled
         case .some(false):
-            return .unsupported
+            return .paused
         case .none:
             return .unknown
         }
@@ -100,13 +101,16 @@ public struct ChargeControlClient: Sendable {
     }
 
     private let actions: any ChargeControlActions
+    private let sessionState: ChargeControlSessionState
 
     public init() {
         self.actions = BatteryToolkitChargeControlActions()
+        self.sessionState = ChargeControlSessionState()
     }
 
     init(actions: any ChargeControlActions) {
         self.actions = actions
+        self.sessionState = ChargeControlSessionState()
     }
 
     public func startDaemon() async -> DaemonStatus {
@@ -149,95 +153,170 @@ public struct ChargeControlClient: Sendable {
     public func restoreChargingBeforeExit(
         timeoutNanoseconds: UInt64 = 3_000_000_000
     ) async -> Bool {
-        await Self.runWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
+        guard sessionState.hasPerformedChargingControl else {
+            return true
+        }
+
+        let completed = await Self.runWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
             await actions.prepareRequestConnection()
-            guard let state = try? await actions.currentState(),
-                  state.daemonEnabled == true else {
-                await actions.stop()
-                return
+
+            if let state = try? await actions.currentState(),
+               state.daemonEnabled == true {
+                let interventions = sessionState.currentInterventions
+                if interventions.contains(.powerAdapter) {
+                    try? await actions.enablePowerAdapter()
+                }
+                if interventions.requiresLimitModeRestore {
+                    try? await actions.chargeToLimit()
+                }
             }
 
-            try? await actions.enablePowerAdapter()
-            try? await actions.chargeToLimit()
             await actions.stop()
         }
+        if completed {
+            sessionState.clearChargingControl()
+        }
+        return completed
     }
 
     public func currentLimits() async throws -> ChargeLimitSettings {
-        return try await actions.currentLimits()
+        do {
+            let limits = try await actions.currentLimits()
+            await actions.stop()
+            return limits
+        } catch {
+            await actions.stop()
+            throw error
+        }
     }
 
     public func currentState() async throws -> ChargeControlState {
-        return try await actions.currentState()
+        do {
+            let state = try await actions.currentState()
+            await actions.stop()
+            return state
+        } catch {
+            await actions.stop()
+            throw error
+        }
     }
 
     public func setLimits(_ limits: ChargeLimitSettings) async throws {
-        try await actions.setLimits(limits)
+        do {
+            try await actions.setLimits(limits)
+            await actions.stop()
+        } catch {
+            await actions.stop()
+            throw error
+        }
     }
 
     public func setLimitsAndApply(
         _ limits: ChargeLimitSettings
     ) async throws -> ChargeLimitApplicationResult {
-        try await actions.setLimits(limits)
-        guard let state = try? await actions.currentState(),
-              let batteryPercent = state.batteryPercent else {
-            return .stateUnavailable
-        }
+        do {
+            try await actions.setLimits(limits)
+            guard let state = try? await actions.currentState(),
+                  let batteryPercent = state.batteryPercent else {
+                await actions.stop()
+                return .stateUnavailable
+            }
 
-        if batteryPercent >= limits.maxCharge {
-            try await actions.disableCharging()
-            return .stoppedCharging
-        }
+            if batteryPercent >= limits.maxCharge {
+                try await actions.disableCharging()
+                await actions.stop()
+                return .stoppedCharging
+            }
 
-        if batteryPercent < limits.minCharge {
-            try await actions.chargeToLimit()
-            return .chargingToLimit
-        }
+            if batteryPercent < limits.minCharge {
+                try await actions.chargeToLimit()
+                await actions.stop()
+                return .chargingToLimit
+            }
 
-        if state.chargingDisabled == true {
-            return .waitingToDropBelowLowerLimit
-        }
+            await actions.stop()
+            if state.chargingDisabled == true {
+                return .waitingToDropBelowLowerLimit
+            }
 
-        return .updated
+            return .updated
+        } catch {
+            await actions.stop()
+            throw error
+        }
     }
 
     public func chargeToLimit() async throws {
-        await actions.prepareRequestConnection()
-        try await actions.chargeToLimit()
+        try await runPreparedControlAction(
+            restoresOnExit: [],
+            clearsOnSuccess: [.charging, .chargeModeOverride]
+        ) {
+            try await actions.chargeToLimit()
+        }
     }
 
     public func chargeToFull() async throws {
-        await actions.prepareRequestConnection()
-        try await actions.chargeToFull()
+        try await runPreparedControlAction(restoresOnExit: .chargeModeOverride) {
+            try await actions.chargeToFull()
+        }
     }
 
     public func disableCharging() async throws {
-        await actions.prepareRequestConnection()
-        try await actions.disableCharging()
+        try await runPreparedControlAction(restoresOnExit: .charging) {
+            try await actions.disableCharging()
+        }
     }
 
     public func disablePowerAdapter() async throws {
-        await actions.prepareRequestConnection()
-        try await actions.disablePowerAdapter()
+        try await runPreparedControlAction(restoresOnExit: .powerAdapter) {
+            try await actions.disablePowerAdapter()
+        }
     }
 
     public func enablePowerAdapter() async throws {
-        await actions.prepareRequestConnection()
-        try await actions.enablePowerAdapter()
+        try await runPreparedControlAction(
+            restoresOnExit: [],
+            clearsOnSuccess: .powerAdapter
+        ) {
+            try await actions.enablePowerAdapter()
+        }
     }
 
     public func pauseActivity() async throws {
-        await actions.prepareRequestConnection()
-        try await actions.pauseActivity()
+        try await runPreparedControlAction(restoresOnExit: []) {
+            try await actions.pauseActivity()
+        }
     }
 
     public func resumeActivity() async throws {
-        await actions.prepareRequestConnection()
-        try await actions.resumeActivity()
+        try await runPreparedControlAction(restoresOnExit: []) {
+            try await actions.resumeActivity()
+        }
     }
 
     public func removeDaemon() async throws {
         try await actions.removeDaemon()
+    }
+
+    private func runPreparedControlAction(
+        restoresOnExit interventions: ChargeControlInterventions,
+        clearsOnSuccess clearedInterventions: ChargeControlInterventions = [],
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        await actions.prepareRequestConnection()
+        do {
+            try await operation()
+            if !clearedInterventions.isEmpty {
+                sessionState.clearChargingControl(clearedInterventions)
+            }
+            if !interventions.isEmpty {
+                sessionState.markChargingControl(interventions)
+            }
+            await actions.stop()
+        } catch {
+            await actions.stop()
+            throw error
+        }
     }
 
     private static func runWithTimeout(
@@ -257,6 +336,89 @@ public struct ChargeControlClient: Sendable {
                     operationTask.cancel()
                 }
             }
+        }
+    }
+}
+
+public enum ChargeControlTermination {
+    @discardableResult
+    public static func waitForActiveActionBeforeRestore(
+        _ activeAction: Task<Void, Never>?,
+        activeActionTimeoutNanoseconds: UInt64 = 3_000_000_000,
+        restore: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        if let activeAction {
+            await waitForActiveAction(
+                activeAction,
+                timeoutNanoseconds: activeActionTimeoutNanoseconds
+            )
+        }
+        return await restore()
+    }
+
+    private static func waitForActiveAction(
+        _ activeAction: Task<Void, Never>,
+        timeoutNanoseconds: UInt64
+    ) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let gate = OneShotContinuation(continuation)
+            Task {
+                await activeAction.value
+                gate.resume(returning: ())
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                if gate.resume(returning: ()) {
+                    activeAction.cancel()
+                }
+            }
+        }
+    }
+}
+
+private struct ChargeControlInterventions: OptionSet, Sendable {
+    let rawValue: UInt8
+
+    static let charging = ChargeControlInterventions(rawValue: 1 << 0)
+    static let powerAdapter = ChargeControlInterventions(rawValue: 1 << 1)
+    static let chargeModeOverride = ChargeControlInterventions(rawValue: 1 << 2)
+
+    var requiresLimitModeRestore: Bool {
+        !intersection([.charging, .powerAdapter, .chargeModeOverride]).isEmpty
+    }
+}
+
+private final class ChargeControlSessionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var interventions: ChargeControlInterventions = []
+
+    var hasPerformedChargingControl: Bool {
+        lock.withLock {
+            !interventions.isEmpty
+        }
+    }
+
+    var currentInterventions: ChargeControlInterventions {
+        lock.withLock {
+            interventions
+        }
+    }
+
+    func markChargingControl(_ interventions: ChargeControlInterventions) {
+        lock.withLock {
+            self.interventions.formUnion(interventions)
+        }
+    }
+
+    func clearChargingControl() {
+        lock.withLock {
+            interventions = []
+        }
+    }
+
+    func clearChargingControl(_ clearedInterventions: ChargeControlInterventions) {
+        lock.withLock {
+            interventions.subtract(clearedInterventions)
         }
     }
 }

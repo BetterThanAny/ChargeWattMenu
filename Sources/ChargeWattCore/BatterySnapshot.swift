@@ -214,6 +214,8 @@ private enum BatteryProperty {
     static func signedDouble(_ value: Any?) -> Double? {
         if let value = value as? NSNumber {
             let type = String(cString: value.objCType)
+            // TODO: Re-check this unsigned-current normalization on more
+            // AppleSmartBattery hardware while discharging.
             if ["C", "S", "I", "L", "Q"].contains(type),
                value.uint64Value > UInt64(Int64.max) {
                 return Double(Int64(bitPattern: value.uint64Value))

@@ -63,6 +63,32 @@ struct BatterySnapshotTests {
         #expect(abs(snapshot.batteryPowerWatts! - -13.8) < 0.05)
     }
 
+    @Test func convertsSwiftUInt64CurrentOverflowToSignedMilliamps() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "ExternalConnected": false,
+            "IsCharging": false,
+            "Voltage": 11_500,
+            "InstantAmperage": UInt64.max - 1_199
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.currentMilliamps == -1_200)
+        #expect(abs(snapshot.batteryPowerWatts! - -13.8) < 0.05)
+    }
+
+    @Test func acceptsUnsignedCurrentWhenItFitsInSignedRange() {
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "ExternalConnected": true,
+            "IsCharging": true,
+            "Voltage": 12_000,
+            "InstantAmperage": UInt64(1_500)
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(snapshot.currentMilliamps == 1_500)
+        #expect(abs(snapshot.batteryPowerWatts! - 18.0) < 0.05)
+    }
+
     @Test func doesNotTreatRawCapacityAsPercentWhenMaxCapacityIsMissing() {
         let snapshot = BatterySnapshot(properties: [
             "BatteryInstalled": true,

@@ -27,9 +27,9 @@ struct ChargeControlMenuVisibilityTests {
         )
     }
 
-    @Test func startsDaemonOnApplicationLaunch() {
+    @Test func doesNotStartDaemonOnApplicationLaunch() {
         #expect(
-            ChargeControlMenuVisibility.shouldStartDaemonOnApplicationLaunch() == true
+            ChargeControlMenuVisibility.shouldStartDaemonOnApplicationLaunch() == false
         )
     }
 
@@ -44,6 +44,19 @@ struct ChargeControlMenuVisibilityTests {
     @Test func doesNotStartDaemonWhenAdvancedControlsAreHidden() {
         #expect(
             ChargeControlMenuVisibility.shouldStartDaemonWhenShowingAdvancedControls(
+                showsAdvancedControls: false
+            ) == false
+        )
+    }
+
+    @Test func refreshesDaemonStatusOnlyWhenAdvancedControlsAreShown() {
+        #expect(
+            ChargeControlMenuVisibility.shouldRefreshDaemonStatusWhenMenuOpens(
+                showsAdvancedControls: true
+            ) == true
+        )
+        #expect(
+            ChargeControlMenuVisibility.shouldRefreshDaemonStatusWhenMenuOpens(
                 showsAdvancedControls: false
             ) == false
         )

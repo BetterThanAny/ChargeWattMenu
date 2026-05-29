@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ChargeWattCore
 
-@Suite
+@Suite(.serialized)
 struct PowerFormatterTests {
     private let formatter = PowerFormatter()
 
@@ -93,6 +93,37 @@ struct PowerFormatterTests {
         ], date: Date(timeIntervalSince1970: 0))
 
         #expect(formatter.menuLines(for: snapshot).contains("剩余时间：1小时33分钟后耗尽"))
+    }
+
+    @Test func menuLinesKeepChineseDurationWhenProcessLanguageIsEnglish() {
+        let defaults = UserDefaults.standard
+        let oldLanguages = defaults.object(forKey: "AppleLanguages")
+        let oldLocale = defaults.object(forKey: "AppleLocale")
+        defaults.set(["en"], forKey: "AppleLanguages")
+        defaults.set("en_US", forKey: "AppleLocale")
+        defer {
+            if let oldLanguages {
+                defaults.set(oldLanguages, forKey: "AppleLanguages")
+            } else {
+                defaults.removeObject(forKey: "AppleLanguages")
+            }
+            if let oldLocale {
+                defaults.set(oldLocale, forKey: "AppleLocale")
+            } else {
+                defaults.removeObject(forKey: "AppleLocale")
+            }
+        }
+
+        let snapshot = BatterySnapshot(properties: [
+            "BatteryInstalled": true,
+            "ExternalConnected": false,
+            "IsCharging": false,
+            "Voltage": 11_500,
+            "Amperage": -1_200,
+            "AvgTimeToEmpty": 93
+        ], date: Date(timeIntervalSince1970: 0))
+
+        #expect(PowerFormatter().menuLines(for: snapshot).contains("剩余时间：1小时33分钟后耗尽"))
     }
 
     @Test func menuLinesShowUnavailableTimeAndHealthWhenMissing() {
