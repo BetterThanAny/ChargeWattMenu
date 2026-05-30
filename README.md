@@ -21,6 +21,16 @@ Voltage(mV) * Current(mA) / 1_000_000 = Watts
 - 只读显示电池与适配器信息，不修改充电阈值或电源适配器状态
 - 中文菜单，零配置启动
 
+## 分支说明
+
+- `main` 是公开只读版，不包含 Battery-Toolkit-SP、后台 daemon 或充电控制代码，适合直接分享给别人使用。
+- `charge-control-local` 是可自签构建的充电控制版，包含 Battery-Toolkit-SP 和后台 daemon。需要控制充电范围时，请切换到该分支并用自己的 Apple Development 或 Developer ID Application 签名构建。
+
+```zsh
+git switch charge-control-local
+```
+
+不要使用别人签好的充电控制版二进制。控制版会启动后台 daemon 并修改充电行为，应只运行自己从源码构建并用自己证书签名的版本。
 
 ## 开发
 
@@ -39,6 +49,8 @@ scripts/package-app.sh
 `${TMPDIR}/ChargeWattMenu-build/<debug|release>/ChargeWattMenu.app`，也可以用
 `BT_APP_OUTPUT_DIR=/path/to/output scripts/package-app.sh` 指定输出目录。没有 Apple Development
 或 Developer ID Application 签名身份时，脚本会使用 ad-hoc 签名生成本机可运行版本。
+
+`main` 的打包脚本只生成只读菜单栏 app，不会打包 daemon，也不会修改充电阈值。
 
 ## 对照 macOS 原始数据验证
 
