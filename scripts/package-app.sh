@@ -4,10 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="ChargeWattMenu"
 DAEMON_NAME="ChargeWattMenuDaemon"
-APP_ID="top.xsdev.ChargeWattMenu"
-DAEMON_ID="${APP_ID}.daemon"
-DAEMON_CONN="${DAEMON_ID}"
-APP_DISPLAY_NAME="充电功率"
+APP_ID="${BT_APP_ID:-top.xsdev.ChargeWattMenu}"
+DAEMON_ID="${BT_DAEMON_ID:-${APP_ID}.daemon}"
+DAEMON_CONN="${BT_DAEMON_CONN:-${DAEMON_ID}}"
+APP_DISPLAY_NAME="${BT_APP_DISPLAY_NAME:-充电功率}"
 BUILD_CONFIGURATION="${BT_BUILD_CONFIGURATION:-}"
 
 detect_signing_identity() {
@@ -19,6 +19,32 @@ detect_signing_identity() {
     security find-identity -v -p codesigning 2>/dev/null \
         | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p; s/.*"\(Apple Development:.*\)"/\1/p' \
         | head -n 1
+}
+
+resolve_codesign_cn() {
+    local identity="$1"
+    local resolved_cn
+
+    if [[ -n "${BT_CODESIGN_CN:-}" ]]; then
+        printf '%s\n' "${BT_CODESIGN_CN}"
+        return
+    fi
+
+    resolved_cn="$(
+        security find-identity -v -p codesigning 2>/dev/null \
+            | sed -nE 's/^[[:space:]]*[0-9]+\) ([0-9A-F]{40}) "(Developer ID Application:.*|Apple Development:.*)"$/\1|\2/p' \
+            | awk -F'|' -v id="${identity}" '$1 == id || $2 == id { print $2; exit }'
+    )"
+    if [[ -n "${resolved_cn}" ]]; then
+        printf '%s\n' "${resolved_cn}"
+        return
+    fi
+
+    case "${identity}" in
+        "Developer ID Application:"*|"Apple Development:"*)
+            printf '%s\n' "${identity}"
+            ;;
+    esac
 }
 
 SIGN_IDENTITY="$(detect_signing_identity)"
@@ -40,7 +66,13 @@ if [[ -z "${SIGN_IDENTITY}" || "${SIGN_IDENTITY}" == "-" ]]; then
     echo "Do not distribute or install this build for production use." >&2
 else
     BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-release}"
-    CODESIGN_CN="${BT_CODESIGN_CN:-${SIGN_IDENTITY}}"
+    CODESIGN_CN="$(resolve_codesign_cn "${SIGN_IDENTITY}")"
+    if [[ -z "${CODESIGN_CN}" ]]; then
+        echo "Could not resolve signing certificate common name." >&2
+        echo "Set BT_CODESIGN_CN to the exact certificate name shown by:" >&2
+        echo "  security find-identity -v -p codesigning" >&2
+        exit 2
+    fi
     DAEMON_AUTH_REQUIREMENT="identifier \"${APP_ID}\" and anchor apple generic and certificate leaf[subject.CN] = \"${CODESIGN_CN}\" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */"
 fi
 

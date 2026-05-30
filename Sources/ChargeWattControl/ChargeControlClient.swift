@@ -619,9 +619,10 @@ private struct BatteryToolkitChargeControlActions: ChargeControlActions {
             return .requiresSignedBuild
         }
 
+        let appId = Bundle.main.bundleIdentifier ?? "top.xsdev.ChargeWattMenu"
         let daemonId = Bundle.main.object(
             forInfoDictionaryKey: "BT_DAEMON_ID"
-        ) as? String ?? "top.xsdev.ChargeWattMenu.daemon"
+        ) as? String ?? "\(appId).daemon"
         let plistName = "\(daemonId).plist"
         let appService = SMAppService.daemon(plistName: plistName)
 
