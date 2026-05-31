@@ -1,6 +1,7 @@
 import BatteryToolkit
 import ChargeWattCore
 import Foundation
+import Security
 import ServiceManagement
 
 public enum ChargeControlError: Error, Equatable {
@@ -8,6 +9,7 @@ public enum ChargeControlError: Error, Equatable {
     case daemonRequiresApproval
     case daemonTimedOut
     case daemonRequiresSignedBuild
+    case authorizationSetupFailed
 }
 
 public struct ChargeControlState: Equatable, Sendable {
@@ -72,6 +74,8 @@ extension ChargeControlError: LocalizedError {
             return "后台 daemon 没有响应。请稍后重试，或重启 ChargeWattMenu。"
         case .daemonRequiresSignedBuild:
             return "当前安装包没有 Apple 代码签名身份，macOS 会拒绝启动后台 daemon。请使用 Apple Development 或 Developer ID 签名后重新安装。"
+        case .authorizationSetupFailed:
+            return "充电控制授权配置失败。请重新打开 ChargeWattMenu 后再试。"
         }
     }
 }
@@ -126,6 +130,7 @@ public struct ChargeControlClient: Sendable {
         timeoutNanoseconds: UInt64 = 8_000_000_000
     ) async -> DaemonStatus {
         do {
+            try await prepareRequestConnection(timeoutNanoseconds: timeoutNanoseconds)
             return try await Self.runThrowingWithTimeout(
                 timeoutNanoseconds: timeoutNanoseconds
             ) {
@@ -148,6 +153,10 @@ public struct ChargeControlClient: Sendable {
         approvalTimeout: UInt8 = 6,
         daemonResponseTimeoutNanoseconds: UInt64 = 8_000_000_000
     ) async throws {
+        try await prepareRequestConnection(
+            timeoutNanoseconds: daemonResponseTimeoutNanoseconds
+        )
+
         var status: DaemonStatus
         do {
             status = try await Self.runThrowingWithTimeout(
@@ -166,6 +175,9 @@ public struct ChargeControlClient: Sendable {
 
         switch status {
         case .enabled:
+            try await prepareManageAuthorizationRight(
+                timeoutNanoseconds: daemonResponseTimeoutNanoseconds
+            )
             return
         case .requiresApproval:
             do {
@@ -173,6 +185,9 @@ public struct ChargeControlClient: Sendable {
             } catch {
                 throw ChargeControlError.daemonRequiresApproval
             }
+            try await prepareManageAuthorizationRight(
+                timeoutNanoseconds: daemonResponseTimeoutNanoseconds
+            )
         case .notRegistered:
             throw ChargeControlError.daemonNotRegistered
         case .notResponding:
@@ -226,6 +241,7 @@ public struct ChargeControlClient: Sendable {
         timeoutNanoseconds: UInt64 = 8_000_000_000
     ) async throws -> ChargeLimitSettings {
         do {
+            try await prepareRequestConnection(timeoutNanoseconds: timeoutNanoseconds)
             let limits = try await Self.runThrowingWithTimeout(
                 timeoutNanoseconds: timeoutNanoseconds
             ) {
@@ -243,6 +259,7 @@ public struct ChargeControlClient: Sendable {
         timeoutNanoseconds: UInt64 = 8_000_000_000
     ) async throws -> ChargeControlState {
         do {
+            try await prepareRequestConnection(timeoutNanoseconds: timeoutNanoseconds)
             let state = try await Self.runThrowingWithTimeout(
                 timeoutNanoseconds: timeoutNanoseconds
             ) {
@@ -261,6 +278,8 @@ public struct ChargeControlClient: Sendable {
         timeoutNanoseconds: UInt64 = 8_000_000_000
     ) async throws {
         do {
+            try await prepareRequestConnection(timeoutNanoseconds: timeoutNanoseconds)
+            try await prepareManageAuthorizationRight(timeoutNanoseconds: timeoutNanoseconds)
             try await Self.runThrowingWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
                 try await actions.setLimits(limits)
             }
@@ -276,6 +295,8 @@ public struct ChargeControlClient: Sendable {
         timeoutNanoseconds: UInt64 = 8_000_000_000
     ) async throws -> ChargeLimitApplicationResult {
         do {
+            try await prepareRequestConnection(timeoutNanoseconds: timeoutNanoseconds)
+            try await prepareManageAuthorizationRight(timeoutNanoseconds: timeoutNanoseconds)
             let result: ChargeLimitApplicationResult = try await Self.runThrowingWithTimeout(
                 timeoutNanoseconds: timeoutNanoseconds
             ) {
@@ -325,13 +346,19 @@ public struct ChargeControlClient: Sendable {
     }
 
     public func disableCharging() async throws {
-        try await runPreparedControlAction(restoresOnExit: .charging) {
+        try await runPreparedControlAction(
+            restoresOnExit: .charging,
+            requiresAuthorization: true
+        ) {
             try await actions.disableCharging()
         }
     }
 
     public func disablePowerAdapter() async throws {
-        try await runPreparedControlAction(restoresOnExit: .powerAdapter) {
+        try await runPreparedControlAction(
+            restoresOnExit: .powerAdapter,
+            requiresAuthorization: true
+        ) {
             try await actions.disablePowerAdapter()
         }
     }
@@ -346,13 +373,19 @@ public struct ChargeControlClient: Sendable {
     }
 
     public func pauseActivity() async throws {
-        try await runPreparedControlAction(restoresOnExit: []) {
+        try await runPreparedControlAction(
+            restoresOnExit: [],
+            requiresAuthorization: true
+        ) {
             try await actions.pauseActivity()
         }
     }
 
     public func resumeActivity() async throws {
-        try await runPreparedControlAction(restoresOnExit: []) {
+        try await runPreparedControlAction(
+            restoresOnExit: [],
+            requiresAuthorization: true
+        ) {
             try await actions.resumeActivity()
         }
     }
@@ -364,12 +397,14 @@ public struct ChargeControlClient: Sendable {
     private func runPreparedControlAction(
         restoresOnExit interventions: ChargeControlInterventions,
         clearsOnSuccess clearedInterventions: ChargeControlInterventions = [],
+        requiresAuthorization: Bool = false,
         timeoutNanoseconds: UInt64 = Self.defaultDaemonResponseTimeoutNanoseconds,
         _ operation: @escaping @Sendable () async throws -> Void
     ) async throws {
         do {
-            try await Self.runThrowingWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
-                await actions.prepareRequestConnection()
+            try await prepareRequestConnection(timeoutNanoseconds: timeoutNanoseconds)
+            if requiresAuthorization {
+                try await prepareManageAuthorizationRight(timeoutNanoseconds: timeoutNanoseconds)
             }
             try await Self.runThrowingWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
                 try await operation()
@@ -384,6 +419,18 @@ public struct ChargeControlClient: Sendable {
         } catch {
             await actions.stop()
             throw error
+        }
+    }
+
+    private func prepareRequestConnection(timeoutNanoseconds: UInt64) async throws {
+        try await Self.runThrowingWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
+            await actions.prepareRequestConnection()
+        }
+    }
+
+    private func prepareManageAuthorizationRight(timeoutNanoseconds: UInt64) async throws {
+        try await Self.runThrowingWithTimeout(timeoutNanoseconds: timeoutNanoseconds) {
+            try await actions.prepareManageAuthorizationRight()
         }
     }
 
@@ -587,6 +634,7 @@ protocol ChargeControlActions: Sendable {
     func startDaemon() async -> ChargeControlClient.DaemonStatus
     func repairDaemonRegistration() async -> ChargeControlClient.DaemonStatus
     func prepareRequestConnection() async
+    func prepareManageAuthorizationRight() async throws
     func approveDaemon(timeout: UInt8) async throws
     func stop() async
     func currentLimits() async throws -> ChargeLimitSettings
@@ -663,6 +711,19 @@ private struct BatteryToolkitChargeControlActions: ChargeControlActions {
 
     func prepareRequestConnection() async {
         await BTDaemonXPCClient.startEventStream { _ in }
+    }
+
+    func prepareManageAuthorizationRight() async throws {
+        try Self.ensurePrivilegedDaemonLaunchSupported()
+        let status = SimpleAuth.duplicateRight(
+            rightName: BTAuthorizationRights.manage,
+            templateName: kAuthorizationRuleAuthenticateAsAdmin,
+            comment: "Used by \(BTPreprocessor.daemonId) to allow access to its privileged functions",
+            timeout: 300
+        )
+        guard status == errSecSuccess else {
+            throw ChargeControlError.authorizationSetupFailed
+        }
     }
 
     func currentLimits() async throws -> ChargeLimitSettings {

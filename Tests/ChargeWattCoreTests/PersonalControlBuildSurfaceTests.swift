@@ -21,6 +21,27 @@ struct PersonalControlBuildSurfaceTests {
         #expect(script.contains("security find-identity -v -p codesigning"))
     }
 
+    @Test func packagingScriptUsesBatteryToolkitRequiredSigningOptions() throws {
+        let script = try readPackageFile("scripts/package-app.sh")
+
+        #expect(script.contains("--options runtime,hard,kill,restrict,enforcement,library"))
+    }
+
+    @Test func packageUsesVendoredBatteryToolkitAuthorizationPatch() throws {
+        let package = try readPackageFile("Package.swift")
+        let appClient = try readPackageFile(
+            "Vendor/Battery-Toolkit-SP/Sources/BatteryToolkit/BTAppXPCClient.swift"
+        )
+        let simpleAuth = try readPackageFile(
+            "Vendor/Battery-Toolkit-SP/Sources/Libraries/SimpleAuth.swift"
+        )
+
+        #expect(package.contains("path: \"Vendor/Battery-Toolkit-SP\""))
+        #expect(appClient.contains("retainedAuthorizations"))
+        #expect(appClient.contains("retainAuthorization(simpleAuth, data: data)"))
+        #expect(simpleAuth.contains("flags: [.extendRights]"))
+    }
+
     @Test func runtimeDaemonFallbackFollowsBundleIdentifier() throws {
         let source = try readPackageFile(
             "Sources/ChargeWattControl/ChargeControlClient.swift"

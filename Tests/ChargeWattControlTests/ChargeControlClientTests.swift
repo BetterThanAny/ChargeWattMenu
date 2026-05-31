@@ -37,7 +37,12 @@ struct ChargeControlClientTests {
 
         #expect(actions.startDaemonCallCount == 1)
         #expect(actions.repairDaemonRegistrationCallCount == 1)
-        #expect(actions.callOrder == ["startDaemon", "repairDaemonRegistration"])
+        #expect(actions.callOrder == [
+            "prepareRequestConnection",
+            "startDaemon",
+            "repairDaemonRegistration",
+            "prepareManageAuthorizationRight"
+        ])
     }
 
     @Test func prepareForActionApprovesDaemonThatRequiresApproval() async throws {
@@ -105,7 +110,7 @@ struct ChargeControlClientTests {
 
         #expect(actions.startDaemonCallCount == 1)
         #expect(actions.repairDaemonRegistrationCallCount == 0)
-        #expect(actions.callOrder == ["startDaemon"])
+        #expect(actions.callOrder == ["prepareRequestConnection", "startDaemon"])
     }
 
     @Test func prepareForActionTimesOutWhenUnregisteredDaemonRepairDoesNotRespond() async {
@@ -366,14 +371,18 @@ struct ChargeControlClientTests {
         #expect(actions.prepareRequestConnectionCallCount == 1)
     }
 
-    @Test func currentLimitsReadsSettingsWithoutStartingEventStream() async throws {
+    @Test func currentLimitsReadsSettingsAfterStartingEventStream() async throws {
         let actions = FakeChargeControlActions(startStatuses: [.enabled])
         let client = ChargeControlClient(actions: actions)
 
         _ = try await client.currentLimits()
 
-        #expect(actions.prepareRequestConnectionCallCount == 0)
-        #expect(actions.callOrder == ["currentLimits", "stop"])
+        #expect(actions.prepareRequestConnectionCallCount == 1)
+        #expect(actions.callOrder == [
+            "prepareRequestConnection",
+            "currentLimits",
+            "stop"
+        ])
     }
 
     @Test func currentLimitsTimesOutAndStopsWhenDaemonDoesNotRespond() async {
@@ -385,17 +394,25 @@ struct ChargeControlClientTests {
             try await client.currentLimits(timeoutNanoseconds: 10_000_000)
         }
 
-        #expect(actions.callOrder == ["currentLimits", "stop"])
+        #expect(actions.callOrder == [
+            "prepareRequestConnection",
+            "currentLimits",
+            "stop"
+        ])
     }
 
-    @Test func currentStateReadsDaemonStateWithoutStartingEventStream() async throws {
+    @Test func currentStateReadsDaemonStateAfterStartingEventStream() async throws {
         let actions = FakeChargeControlActions(startStatuses: [.enabled])
         let client = ChargeControlClient(actions: actions)
 
         _ = try await client.currentState()
 
-        #expect(actions.prepareRequestConnectionCallCount == 0)
-        #expect(actions.callOrder == ["currentState", "stop"])
+        #expect(actions.prepareRequestConnectionCallCount == 1)
+        #expect(actions.callOrder == [
+            "prepareRequestConnection",
+            "currentState",
+            "stop"
+        ])
     }
 
     @Test func setLimitsAndApplyStopsChargingAtOrAboveUpperLimit() async throws {
@@ -416,12 +433,19 @@ struct ChargeControlClientTests {
         )
 
         #expect(result == .stoppedCharging)
-        #expect(actions.prepareRequestConnectionCallCount == 0)
+        #expect(actions.prepareRequestConnectionCallCount == 1)
         #expect(actions.setLimitsCallCount == 1)
         #expect(actions.currentStateCallCount == 1)
         #expect(actions.disableChargingCallCount == 1)
         #expect(actions.chargeToLimitCallCount == 0)
-        #expect(actions.callOrder == ["setLimits", "currentState", "disableCharging", "stop"])
+        #expect(actions.callOrder == [
+            "prepareRequestConnection",
+            "prepareManageAuthorizationRight",
+            "setLimits",
+            "currentState",
+            "disableCharging",
+            "stop"
+        ])
     }
 
     @Test func setLimitsAndApplyChargesToLimitBelowLowerLimit() async throws {
@@ -585,6 +609,7 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
     private(set) var startDaemonCallCount = 0
     private(set) var repairDaemonRegistrationCallCount = 0
     private(set) var prepareRequestConnectionCallCount = 0
+    private(set) var prepareManageAuthorizationRightCallCount = 0
     private(set) var currentStateCallCount = 0
     private(set) var approveTimeouts: [UInt8] = []
     private(set) var setLimitsCallCount = 0
@@ -661,6 +686,13 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
         }
         if shouldHang {
             try? await Task.sleep(nanoseconds: 60_000_000_000)
+        }
+    }
+
+    func prepareManageAuthorizationRight() async throws {
+        lock.withLock {
+            prepareManageAuthorizationRightCallCount += 1
+            callOrder.append("prepareManageAuthorizationRight")
         }
     }
 
@@ -785,6 +817,7 @@ private final class FakeChargeControlActions: ChargeControlActions, @unchecked S
             startDaemonCallCount = 0
             repairDaemonRegistrationCallCount = 0
             prepareRequestConnectionCallCount = 0
+            prepareManageAuthorizationRightCallCount = 0
             currentStateCallCount = 0
             approveTimeouts = []
             setLimitsCallCount = 0

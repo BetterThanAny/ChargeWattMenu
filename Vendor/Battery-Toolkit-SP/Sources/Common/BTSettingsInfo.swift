@@ -1,0 +1,52 @@
+//
+// Copyright (C) 2022 - 2025 Marvin Häuser. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+
+import Foundation
+
+public enum BTSettingsInfo {
+    public enum DisplayMode: UInt8 {
+        case `default` = 0
+        case display = 1
+        case desktop = 2
+    }
+    
+    public enum Defaults {
+        public static let minCharge: UInt8 = 75
+        public static let maxCharge: UInt8 = 80
+        public static let adapterSleep = false
+        public static let sleepProtection = false
+        public static let displayMode: DisplayMode = .default
+        public static let magSafeSync = false
+        public static let magSafeInvertedIndicator = false
+        public static let criticalTemperatureC: Double = 40.0
+    }
+
+    public enum Bounds {
+        public static let minChargeMin: UInt8 = 20
+        public static let maxChargeMin: UInt8 = 50
+        public static let criticalTemperatureMin: Double = 35.0
+        public static let criticalTemperatureMax: Double = 50.0
+    }
+
+    public enum Keys {
+        public static let minCharge = "MinCharge"
+        public static let maxCharge = "MaxCharge"
+        public static let adapterSleep = "AdapterSleep"
+        public static let displayMode = "DisplayMode"
+        public static let magSafeSync = "MagSafeSync"
+        public static let magSafeInvertedIndicator = "MagSafeInvertedIndicator"
+        public static let criticalTemperatureC = "CriticalTemperatureC"
+    }
+
+    public static func chargeLimitsValid(
+        minCharge: Int,
+        maxCharge: Int
+    ) -> Bool {
+        return self.Bounds.minChargeMin <= minCharge &&
+            minCharge <= maxCharge &&
+            maxCharge <= 100 &&
+            self.Bounds.maxChargeMin <= maxCharge
+    }
+}

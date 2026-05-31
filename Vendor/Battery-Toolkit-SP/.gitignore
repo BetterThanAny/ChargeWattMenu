@@ -1,0 +1,7 @@
+.DS_Store
+.swiftpm/
+.build/
+
+# Xcode user data (if a workspace is generated locally)
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/

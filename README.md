@@ -32,6 +32,9 @@ Voltage(mV) * Current(mA) / 1_000_000 = Watts
 - `main`：公开只读版，不包含 Battery-Toolkit-SP、daemon 或充电控制。
 - `charge-control-local`：本地自签控制版，包含 Battery-Toolkit-SP 和后台 daemon。请自行从源码构建，不要使用别人签好的二进制控制充电。
 
+`charge-control-local` 使用仓库内的 `Vendor/Battery-Toolkit-SP`，其中包含 ChargeWattMenu
+本地控制所需的授权和 XPC 兼容补丁。不要在没有重新实机验证充电范围控制的情况下，把它替换回远端依赖。
+
 ## 开发
 
 ```zsh

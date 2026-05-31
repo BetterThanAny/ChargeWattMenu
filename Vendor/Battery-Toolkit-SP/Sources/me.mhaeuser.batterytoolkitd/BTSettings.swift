@@ -1,0 +1,324 @@
+//
+// Copyright (C) 2022 - 2024 Marvin Häuser. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+
+import Foundation
+import os.log
+
+@MainActor
+internal enum BTSettings {
+    private(set) static var minCharge = BTSettingsInfo.Defaults.minCharge
+    private(set) static var maxCharge = BTSettingsInfo.Defaults.maxCharge
+    private(set) static var adapterSleep = BTSettingsInfo.Defaults.adapterSleep
+    private(set) static var sleepProtection = BTSettingsInfo.Defaults.sleepProtection
+    private(set) static var displayMode = BTSettingsInfo.Defaults.displayMode
+    private(set) static var magSafeSync = BTSettingsInfo.Defaults.magSafeSync
+    private(set) static var magSafeInvertedIndicator = BTSettingsInfo.Defaults.magSafeInvertedIndicator
+    private(set) static var criticalTemperatureC = BTSettingsInfo.Defaults.criticalTemperatureC
+
+    static func readDefaults() {
+        self.adapterSleep = UserDefaults.standard.bool(
+            forKey: BTSettingsInfo.Keys.adapterSleep
+        )
+        let defaults = UserDefaults.standard
+        if let displayModeValue = defaults.object(forKey: BTSettingsInfo.Keys.displayMode) {
+            //
+            // Handle both boolean and integer display mode values.
+            //
+            if let boolVal = displayModeValue as? Bool {
+                self.displayMode = boolVal ? .display : .default
+                self.sleepProtection = boolVal
+            } else if let intVal = displayModeValue as? UInt8,
+                      let mode = BTSettingsInfo.DisplayMode(rawValue: intVal) {
+                self.displayMode = mode
+                self.sleepProtection = (mode != .default)
+            } else {
+                self.displayMode = BTSettingsInfo.Defaults.displayMode
+                self.sleepProtection = BTSettingsInfo.Defaults.sleepProtection
+            }
+        } else {
+            self.displayMode = BTSettingsInfo.Defaults.displayMode
+            self.sleepProtection = BTSettingsInfo.Defaults.sleepProtection
+        }
+        self.magSafeSync = UserDefaults.standard.bool(
+            forKey: BTSettingsInfo.Keys.magSafeSync
+        )
+        self.magSafeInvertedIndicator = UserDefaults.standard.bool(
+            forKey: BTSettingsInfo.Keys.magSafeInvertedIndicator
+        )
+        let storedCriticalTemperature = UserDefaults.standard.double(
+            forKey: BTSettingsInfo.Keys.criticalTemperatureC
+        )
+        if storedCriticalTemperature > 0 {
+            self.criticalTemperatureC = self.normalizedCriticalTemperatureC(storedCriticalTemperature)
+        } else {
+            self.criticalTemperatureC = BTSettingsInfo.Defaults.criticalTemperatureC
+        }
+
+        let minCharge = UserDefaults.standard.integer(
+            forKey: BTSettingsInfo.Keys.minCharge
+        )
+        let maxCharge = UserDefaults.standard.integer(
+            forKey: BTSettingsInfo.Keys.maxCharge
+        )
+        guard
+            BTSettingsInfo.chargeLimitsValid(
+                minCharge: minCharge,
+                maxCharge: maxCharge
+            )
+        else {
+            os_log("Charge limits malformed, restore current values")
+            self.writeDefaults()
+            return
+        }
+
+        self.minCharge = UInt8(minCharge)
+        self.maxCharge = UInt8(maxCharge)
+    }
+
+    static func removeDefaults() {
+        UserDefaults.standard.removeObject(
+            forKey: BTSettingsInfo.Keys.adapterSleep
+        )
+        UserDefaults.standard.removeObject(
+            forKey: BTSettingsInfo.Keys.displayMode
+        )
+        UserDefaults.standard.removeObject(
+            forKey: BTSettingsInfo.Keys.magSafeSync
+        )
+        UserDefaults.standard.removeObject(
+            forKey: BTSettingsInfo.Keys.magSafeInvertedIndicator
+        )
+        UserDefaults.standard.removeObject(
+            forKey: BTSettingsInfo.Keys.criticalTemperatureC
+        )
+        UserDefaults.standard.removeObject(
+            forKey: BTSettingsInfo.Keys.minCharge
+        )
+        UserDefaults.standard.removeObject(
+            forKey: BTSettingsInfo.Keys.maxCharge
+        )
+
+        _ = CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+    }
+
+    static func getSettings() -> [String: NSObject & Sendable] {
+        let minCharge = NSNumber(value: self.minCharge)
+        let maxCharge = NSNumber(value: self.maxCharge)
+        let adapterSleep = NSNumber(value: self.adapterSleep)
+        let displayMode = NSNumber(value: self.displayMode.rawValue)
+        let magSafeSync = NSNumber(value: self.magSafeSync)
+        let magSafeInvertedIndicator = NSNumber(value: self.magSafeInvertedIndicator)
+        let criticalTemperature = NSNumber(value: self.criticalTemperatureC)
+        var settings: [String: NSObject & Sendable] = [
+            BTSettingsInfo.Keys.minCharge: minCharge,
+            BTSettingsInfo.Keys.maxCharge: maxCharge,
+            BTSettingsInfo.Keys.adapterSleep: adapterSleep,
+            BTSettingsInfo.Keys.displayMode: displayMode,
+            BTSettingsInfo.Keys.criticalTemperatureC: criticalTemperature,
+        ]
+
+        if SMCComm.MagSafe.supported {
+            settings.updateValue(magSafeSync,
+                forKey: BTSettingsInfo.Keys.magSafeSync)
+            settings.updateValue(magSafeInvertedIndicator,
+                forKey: BTSettingsInfo.Keys.magSafeInvertedIndicator)
+        }
+
+        return settings
+    }
+
+    static func setSettings(
+        settings: [String: NSObject & Sendable],
+        reply: @Sendable @escaping (BTError.RawValue) -> Void
+    ) {
+        let minChargeNum = settings[BTSettingsInfo.Keys.minCharge] as? NSNumber
+        let minCharge = minChargeNum?.intValue ??
+            Int(BTSettingsInfo.Defaults.minCharge)
+
+        let maxChargeNum = settings[BTSettingsInfo.Keys.maxCharge] as? NSNumber
+        let maxCharge = maxChargeNum?.intValue ??
+            Int(BTSettingsInfo.Defaults.maxCharge)
+
+        let success = self.setChargeLimits(
+            minCharge: minCharge,
+            maxCharge: maxCharge
+        )
+        guard success else {
+            reply(BTError.malformedData.rawValue)
+            return
+        }
+
+        let adapterSleepNum =
+            settings[BTSettingsInfo.Keys.adapterSleep] as? NSNumber
+        let adapterSleep = adapterSleepNum?.boolValue ??
+            BTSettingsInfo.Defaults.adapterSleep
+
+        self.setAdapterSleep(enabled: adapterSleep)
+
+        let displayModeNum =
+            settings[BTSettingsInfo.Keys.displayMode] as? NSNumber
+        let legacyDisplayModeBool = displayModeNum?.boolValue
+        let hasIntegralDisplayMode = displayModeNum.map { CFNumberIsFloatType($0) == false } ?? false
+        let normalizedDisplayMode: BTSettingsInfo.DisplayMode
+        if hasIntegralDisplayMode,
+           let displayModeNum,
+           let mode = BTSettingsInfo.DisplayMode(rawValue: displayModeNum.uint8Value) {
+            normalizedDisplayMode = mode
+        } else if let legacyDisplayModeBool {
+            normalizedDisplayMode = legacyDisplayModeBool ? .display : .default
+        } else {
+            normalizedDisplayMode = BTSettingsInfo.Defaults.displayMode
+        }
+
+        self.setDisplayMode(mode: normalizedDisplayMode)
+
+        let magSafeSyncNum =
+            settings[BTSettingsInfo.Keys.magSafeSync] as? NSNumber
+        let magSafeSync = magSafeSyncNum?.boolValue ??
+            BTSettingsInfo.Defaults.magSafeSync
+
+        self.setMagSafeSync(enabled: magSafeSync)
+
+        let magSafeInvertedNum =
+            settings[BTSettingsInfo.Keys.magSafeInvertedIndicator] as? NSNumber
+        let magSafeInverted = magSafeInvertedNum?.boolValue ??
+            BTSettingsInfo.Defaults.magSafeInvertedIndicator
+
+        self.setMagSafeInvertedIndicator(enabled: magSafeInverted)
+
+        let criticalTempNum =
+            settings[BTSettingsInfo.Keys.criticalTemperatureC] as? NSNumber
+        let criticalTemp = criticalTempNum?.doubleValue ??
+            BTSettingsInfo.Defaults.criticalTemperatureC
+
+        self.setCriticalTemperatureC(criticalTemp)
+        BTPowerState.reconcileGlobalSleepAssertion()
+
+        self.writeDefaults()
+
+        reply(BTError.success.rawValue)
+    }
+
+    private static func setChargeLimits(
+        minCharge: Int,
+        maxCharge: Int
+    ) -> Bool {
+        guard
+            BTSettingsInfo.chargeLimitsValid(
+                minCharge: minCharge,
+                maxCharge: maxCharge
+            )
+        else {
+            os_log("Client charge limits malformed, preserve current values")
+            return false
+        }
+
+        self.minCharge = UInt8(minCharge)
+        self.maxCharge = UInt8(maxCharge)
+
+        BTPowerEvents.settingsChanged()
+
+        return true
+    }
+
+    private static func setAdapterSleep(enabled: Bool) {
+        guard self.adapterSleep != enabled else {
+            return
+        }
+
+        self.adapterSleep = enabled
+
+        BTPowerState.adapterSleepSettingToggled()
+    }
+
+    private static func setDisplayMode(mode: BTSettingsInfo.DisplayMode) {
+        guard self.displayMode != mode || self.sleepProtection != (mode != .default) else {
+            return
+        }
+
+        self.displayMode = mode
+        self.sleepProtection = (mode != .default)
+        BTPowerState.reevaluateChargingSleepAssertionPolicy()
+    }
+
+    private static func setMagSafeSync(enabled: Bool) {
+        guard self.magSafeSync != enabled else {
+            return
+        }
+
+        self.magSafeSync = enabled
+
+        BTPowerState.magSafeSyncSettingToggled()
+    }
+
+    private static func setMagSafeInvertedIndicator(enabled: Bool) {
+        guard self.magSafeInvertedIndicator != enabled else {
+            return
+        }
+
+        self.magSafeInvertedIndicator = enabled
+        BTPowerState.magSafeSyncSettingToggled()
+    }
+
+    private static func setCriticalTemperatureC(_ value: Double) {
+        let normalized = self.normalizedCriticalTemperatureC(value)
+        guard self.criticalTemperatureC != normalized else {
+            return
+        }
+
+        self.criticalTemperatureC = normalized
+        BTPowerState.reevaluateChargingSleepAssertionPolicy()
+    }
+
+    private static func normalizedCriticalTemperatureC(_ value: Double) -> Double {
+        let minValue = BTSettingsInfo.Bounds.criticalTemperatureMin
+        let maxValue = BTSettingsInfo.Bounds.criticalTemperatureMax
+        return min(maxValue, max(minValue, value))
+    }
+
+    private static func writeDefaults() {
+        assert(
+            BTSettingsInfo.chargeLimitsValid(
+                minCharge: Int(self.minCharge),
+                maxCharge: Int(self.maxCharge)
+            )
+        )
+
+        UserDefaults.standard.set(
+            self.minCharge,
+            forKey: BTSettingsInfo.Keys.minCharge
+        )
+        UserDefaults.standard.set(
+            self.maxCharge,
+            forKey: BTSettingsInfo.Keys.maxCharge
+        )
+        UserDefaults.standard.set(
+            self.adapterSleep,
+            forKey: BTSettingsInfo.Keys.adapterSleep
+        )
+        UserDefaults.standard.set(
+            self.displayMode.rawValue,
+            forKey: BTSettingsInfo.Keys.displayMode
+        )
+        UserDefaults.standard.set(
+            self.magSafeSync,
+            forKey: BTSettingsInfo.Keys.magSafeSync
+        )
+        UserDefaults.standard.set(
+            self.magSafeInvertedIndicator,
+            forKey: BTSettingsInfo.Keys.magSafeInvertedIndicator
+        )
+        UserDefaults.standard.set(
+            self.criticalTemperatureC,
+            forKey: BTSettingsInfo.Keys.criticalTemperatureC
+        )
+        //
+        // As NSUserDefaults are not automatically synchronized without
+        // NSApplication, do so manually.
+        //
+        _ = CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+    }
+
+}

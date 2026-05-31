@@ -27,8 +27,7 @@ let package = Package(
     ],
     dependencies: [
         .package(
-            url: "https://github.com/Ailogeneous/Battery-Toolkit-SP",
-            revision: "bce4f8692c5b0af23ba23b69338b720f3614b02d"
+            path: "Vendor/Battery-Toolkit-SP"
         )
     ],
     targets: [

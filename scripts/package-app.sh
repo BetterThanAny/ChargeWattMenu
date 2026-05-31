@@ -148,7 +148,7 @@ codesign_args=(
     --sign "${SIGN_IDENTITY}"
 )
 if [[ "${SIGN_IDENTITY}" != "-" ]]; then
-    codesign_args+=(--options runtime)
+    codesign_args+=(--options runtime,hard,kill,restrict,enforcement,library)
 fi
 
 xattr -cr "${APP_DIR}"
